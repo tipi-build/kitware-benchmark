@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -55,10 +56,13 @@ def pull_docker_image(image):
 class DockerContainer:
     """Context manager for a docker container lifecycle."""
 
-    def __init__(self, image, source_dir):
+    def __init__(self, image, source_dir, log_dir):
         self.image = image
         self.source_dir = source_dir
         self.name = str(uuid.uuid4())
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self._exec_counter = 0
 
     def __enter__(self):
         uid = os.getuid()
@@ -103,13 +107,31 @@ class DockerContainer:
         subprocess.run(["docker", "stop", "-t0", self.name], check=True)
         print("Container stopped.")
 
-    def exec(self, cmd):
-        """Run a command inside the container and return elapsed time."""
+    def exec(self, cmd, step=None):
+        """Run a command inside the container, stream output to console and log file, return elapsed time."""
+        self._exec_counter += 1
+        label = step or f"step_{self._exec_counter}"
+        log_file = self.log_dir / f"{label}.log"
+
         print(f"  [{self.name[:8]}] Running: {cmd}")
         start = time.perf_counter()
-        subprocess.run(["docker", "exec", self.name, "bash", "-c", cmd], check=True)
+        with open(log_file, "w") as f:
+            f.write(f"$ {cmd}\n\n")
+            proc = subprocess.Popen(
+                ["docker", "exec", self.name, "bash", "-c", cmd],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                f.write(line)
+            proc.wait()
+            if proc.returncode != 0:
+                f.write(f"\n[EXIT CODE: {proc.returncode}]\n")
         elapsed = time.perf_counter() - start
-        print(f"  Done in {elapsed:.2f}s")
+
+        print(f"  Done in {elapsed:.2f}s (log: {log_file})")
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
         return elapsed
 
 
@@ -137,22 +159,23 @@ def benchmark_vtk_project_cmake(source_dir, image, iterations, toolchains):
             print(f"\n--- Iteration {i}/{iterations} ---")
             clean_test_repo(source_dir)
 
-            with DockerContainer(image, source_dir) as container:
+            log_dir = f"logs/cmake/{tc_name}/iter_{i}"
+            with DockerContainer(image, source_dir, log_dir) as container:
                 result = BenchmarkResult(toolchain=tc_name, description=description, iteration=i)
 
-                result.record("configure", container.exec(f"tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain}"))
+                result.record("configure", container.exec(f"tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain}", step="configure"))
                 print(f"  [configure] {result.timings['configure']}s")
 
-                result.record("build", container.exec("tipi run cmake --build ./build"))
+                result.record("build", container.exec("tipi run cmake --build ./build", step="build"))
                 print(f"  [build] {result.timings['build']}s")
 
                 # Clean then rebuild
-                container.exec("tipi run cmake --build ./build --target clean")
-                result.record("rebuild", container.exec("tipi run cmake --build ./build"))
+                container.exec("tipi run cmake --build ./build --target clean", step="clean")
+                result.record("rebuild", container.exec("tipi run cmake --build ./build", step="rebuild"))
                 print(f"  [rebuild] {result.timings['rebuild']}s")
 
                 modify_file_to_trigger_incremental_build(container)
-                result.record("touch_rebuild", container.exec("tipi run cmake --build ./build"))
+                result.record("touch_rebuild", container.exec("tipi run cmake --build ./build", step="touch_rebuild"))
                 print(f"  [touch-rebuild] {result.timings['touch_rebuild']}s")
 
                 results.append(asdict(result))
@@ -179,31 +202,32 @@ def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains, jo
             print(f"\n--- Iteration {i}/{iterations} ---")
             clean_test_repo(source_dir)
 
-            with DockerContainer(image, source_dir) as container:
+            log_dir = f"logs/cmake-re/{tc_name}/iter_{i}"
+            with DockerContainer(image, source_dir, log_dir) as container:
                 silo_key = str(uuid.uuid4())
                 result = BenchmarkResult(toolchain=tc_name, description=description, iteration=i)
 
                 # Configure
                 print("  [no-cache] cmake-re configure + build...")
-                result.record("configure", container.exec(f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed"))
+                result.record("configure", container.exec(f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed", step="configure"))
                 print(f"  [configure] {result.timings['configure']}s")
 
                 # First build: no cache (seed the RBE cache)
-                result.record("build_no_cache", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}'))
+                result.record("build_no_cache", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}', step="build_no_cache"))
                 print(f"  [no-cache] {result.timings['build_no_cache']}s")
 
                 # Clean build artifacts, keep RBE cache warm
-                container.exec(f'cmake-re --build ./build --target clean --host')
+                container.exec(f'cmake-re --build ./build --target clean --host', step="clean")
 
                 # Second build: with warm RBE cache
                 print("  [with-cache] cmake-re build...")
-                result.record("build_with_cache", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}'))
+                result.record("build_with_cache", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}', step="build_with_cache"))
                 print(f"  [with-cache] {result.timings['build_with_cache']}s")
 
                 # Touch rebuild
                 modify_file_to_trigger_incremental_build(container)
                 print("  [touch-rebuild] cmake-re build after header touch...")
-                result.record("touch_rebuild", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}'))
+                result.record("touch_rebuild", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}', step="touch_rebuild"))
                 print(f"  [touch-rebuild] {result.timings['touch_rebuild']}s")
 
                 results.append(asdict(result))
