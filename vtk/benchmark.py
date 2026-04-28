@@ -206,7 +206,26 @@ def make_cmake_re_steps(jobs):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    example_config = """\
+Expected JSON config format:
+{
+  "repo_url":    "<git URL of the repository to benchmark>",
+  "branch":      "<git branch to checkout>",
+  "image":       "<docker image (name or name@sha256:digest)>",
+  "toolchains":  [
+    {
+      "path":        "<path to CMake toolchain file, relative to repo root>",
+      "description": "<human-readable label for this toolchain>"
+    }
+  ],
+  "iterations":  "<number of benchmark iterations per toolchain (default: 1)>",
+  "jobs":        "<number of parallel jobs for cmake-re builds (default: 1500)>",
+  "output_dir":  "<directory for logs and results (default: output)>"
+}"""
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=example_config,
+    )
     parser.add_argument("config", help="path to JSON configuration file")
     args = parser.parse_args()
 
