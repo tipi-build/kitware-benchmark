@@ -24,6 +24,7 @@ class BenchmarkConfig:
     toolchains: list
     output_dir: Path
     touch_file: str
+    rbe_service: str
 
 
 @dataclass
@@ -72,9 +73,10 @@ def pull_docker_image(image):
 class DockerContainer:
     """Context manager for a docker container lifecycle."""
 
-    def __init__(self, image, source_dir, log_dir):
+    def __init__(self, image, source_dir, log_dir, rbe_service):
         self.image = image
         self.source_dir = source_dir
+        self.rbe_service = rbe_service
         self.name = str(uuid.uuid4())
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -98,7 +100,7 @@ class DockerContainer:
             "-e", "TIPI_CACHE_CONSUME_ONLY=ON",
             "-e", "TIPI_CACHE_FORCE_ENABLE=OFF",
             "-e", "HOME",
-            "-e", "RBE_service=kernite.cluster.engflow.com:443",
+            "-e", f"RBE_service={self.rbe_service}",
             "-e", f"RBE_tls_client_auth_key={home}/engflow-mTLS/engflow.key",
             "-e", f"RBE_tls_client_auth_cert={home}/engflow-mTLS/engflow.crt",
             "-v", f"{home}:{home}:rw",
@@ -182,7 +184,7 @@ def run_benchmarks(cfg, tool_name, run_steps):
             clean_test_repo(cfg.source_dir)
 
             log_dir = cfg.output_dir / "logs" / tool_name / tc_name / f"iter_{i}"
-            with DockerContainer(cfg.image, cfg.source_dir, log_dir) as container:
+            with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service) as container:
                 result = BenchmarkResult(tool=tool_name, toolchain=tc_name, description=description, iteration=i)
                 run_steps(container, result, toolchain_path, cfg.touch_file)
                 results.append(asdict(result))
@@ -240,7 +242,8 @@ Expected JSON config format:
   "iterations":  "<number of benchmark iterations per toolchain (default: 1)>",
   "jobs":        "<number of parallel jobs for cmake-re builds (default: 1500)>",
   "output_dir":  "<directory for logs and results (default: output)>",
-  "touch_file":  "<header file to modify for incremental rebuild test, relative to repo root>"
+  "touch_file":  "<header file to modify for incremental rebuild test, relative to repo root>",
+  "rbe_service": "<RBE endpoint host:port (default: kernite.cluster.engflow.com:443)>"
 }"""
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -279,16 +282,23 @@ Expected JSON config format:
         toolchains=[(tc["path"], tc["description"]) for tc in config["toolchains"]],
         output_dir=output_dir,
         touch_file=config["touch_file"],
+        rbe_service=config.get("rbe_service", "kernite.cluster.engflow.com:443"),
     )
 
     all_results = []
+    suite_start = time.perf_counter()
     all_results.extend(run_benchmarks(cfg, "cmake", cmake_steps))
     all_results.extend(run_benchmarks(cfg, "cmake-re", make_cmake_re_steps(jobs)))
+    suite_elapsed = time.perf_counter() - suite_start
 
     results_file = output_dir / "benchmark-results.json"
     with open(results_file, "w") as f:
         json.dump(all_results, f, indent=2)
+
+    minutes, seconds = divmod(int(suite_elapsed), 60)
+    hours, minutes = divmod(minutes, 60)
     print(f"\nAll results written to {results_file}")
+    print(f"Total benchmark time: {hours}h{minutes:02d}m{seconds:02d}s")
 
 
 if __name__ == "__main__":
