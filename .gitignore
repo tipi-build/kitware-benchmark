@@ -1,0 +1,7 @@
+/build*
+/build
+.vscode/
+.*.swp
+\.DS_Store
+.claude/
+

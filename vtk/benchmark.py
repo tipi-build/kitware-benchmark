@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import resource
 from pathlib import Path
 
 def clone_repo(url, branch):
@@ -54,6 +55,7 @@ def start_docker(image, source_dir, container_name=None):
         "--rm", "--init",
         "--name", container_name,
         f"-u{uid}:{gid}", "--group-add", "tipi",
+        "--ulimit", "nofile=65535:65535",   #
         "-e", "TIPI_DISABLE_AR_RANLIB_DRIVER=ON",
         "-e", "TIPI_CACHE_CONSUME_ONLY=ON",
         "-e", "TIPI_CACHE_FORCE_ENABLE=OFF",
@@ -173,6 +175,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--iterations", type=int, default=1)
     args = parser.parse_args()
+    target = 65535
+    resource.setrlimit(resource.RLIMIT_NOFILE, (target, target))
 
     toolchains = [
         ("toolchains/environments/linux-kitware-paraview-vtk-mini.cmake", "mini configuration"),
