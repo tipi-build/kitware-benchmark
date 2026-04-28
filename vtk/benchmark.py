@@ -102,9 +102,13 @@ def benchmark_vtk_project_cmake(source_dir, image, iterations, toolchains):
     """Benchmark cmake configure+build on VTK for each toolchain."""
     for toolchain, description in toolchains:
         tc_name = Path(toolchain).stem
-        output_file = f"cmake-run_{tc_name}.txt"
+        build_file = f"cmake-run_build_{tc_name}.txt"
+        rebuild_file = f"cmake-run_rebuild_{tc_name}.txt"
+        touch_file = f"cmake-run_touch_rebuild_{tc_name}.txt"
         print(f"\n=== CMake benchmark: {description} ({tc_name}) ===")
-        with open(output_file, "w") as f:
+        with open(build_file, "w") as f_build, \
+             open(rebuild_file, "w") as f_rebuild, \
+             open(touch_file, "w") as f_touch:
             for i in range(1, iterations + 1):
                 print(f"\n--- Iteration {i}/{iterations} ---")
                 container_name = str(uuid.uuid4())
@@ -113,17 +117,33 @@ def benchmark_vtk_project_cmake(source_dir, image, iterations, toolchains):
                 docker_exec(container, f"tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain}")
                 build_time = docker_exec(container, "tipi run cmake --build ./build")
 
-                f.write(f"{description} iteration {i} build {build_time:.2f}s\n")
-                f.flush()
+                f_build.write(f"{description} iteration {i} build {build_time:.2f}s\n")
+                f_build.flush()
+                print(f"  [build] Build: {build_time:.2f}s")
 
-                print(f"Iteration {i} - Build: {build_time:.2f}s")
+                # Clean then rebuild
+                docker_exec(container, "tipi run cmake --build ./build --target clean")
+                rebuild_time = docker_exec(container, "tipi run cmake --build ./build")
+
+                f_rebuild.write(f"{description} iteration {i} rebuild {rebuild_time:.2f}s\n")
+                f_rebuild.flush()
+                print(f"  [rebuild] Build: {rebuild_time:.2f}s")
+
+                # Touch vtkVersionQuick.h.in with a unique define to trigger cascade rebuild
+                touch_uuid = str(uuid.uuid4())
+                docker_exec(container, f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" Common/Core/vtkVersionQuick.h.in')
+                touch_rebuild_time = docker_exec(container, "tipi run cmake --build ./build")
+
+                f_touch.write(f"{description} iteration {i} touch-rebuild {touch_rebuild_time:.2f}s\n")
+                f_touch.flush()
+                print(f"  [touch-rebuild] Build: {touch_rebuild_time:.2f}s")
 
                 stop_docker(container_name)
                 build_path = source_dir / "build"
                 if build_path.exists():
                     shutil.rmtree(build_path)
 
-        print(f"\nResults written to {output_file}")
+        print(f"\nResults written to {build_file}, {rebuild_file} and {touch_file}")
 
 
 def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains, jobs):
@@ -132,9 +152,11 @@ def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains, jo
         tc_name = Path(toolchain).stem
         no_cache_file = f"cmake-re-run_no_cache_{tc_name}.txt"
         with_cache_file = f"cmake-re-run_with_cache_{tc_name}.txt"
+        touch_file = f"cmake-re-run_touch_rebuild_{tc_name}.txt"
         print(f"\n=== cmake-re benchmark with toolchain: {tc_name} ===")
         with open(no_cache_file, "w") as f_no_cache, \
-             open(with_cache_file, "w") as f_with_cache:
+             open(with_cache_file, "w") as f_with_cache, \
+             open(touch_file, "w") as f_touch:
             for i in range(1, iterations + 1):
                 print(f"\n--- Iteration {i}/{iterations} ---")
                 container_name = str(uuid.uuid4())
@@ -150,25 +172,33 @@ def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains, jo
                 f_no_cache.flush()
                 print(f"  [no-cache] Build: {build_time_no:.2f}s")
 
-                # Remove local cache and build dir
-                docker_exec(container, "rm -rf /usr/local/share/.tipi/vT.w")
-                docker_exec(container, "rm -rf ./build")
+                # Clean build artifacts, keep RBE cache warm
+                docker_exec(container, f'cmake-re --build ./build --target clean --host')
 
                 # Second run: with warm RBE cache
                 print("  [with-cache] cmake-re configure + build...")
-                docker_exec(container, f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed")
                 build_time_cache = docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}')
 
                 f_with_cache.write(f"{description} with-cache iteration {i} build {build_time_cache:.2f}s\n")
                 f_with_cache.flush()
                 print(f"  [with-cache] Build: {build_time_cache:.2f}s")
 
+                # Touch vtkVersionQuick.h.in with a unique define to trigger cascade rebuild
+                touch_uuid = str(uuid.uuid4())
+                docker_exec(container, f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" Common/Core/vtkVersionQuick.h.in')
+                print("  [touch-rebuild] cmake-re build after header touch...")
+                touch_rebuild_time = docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}')
+
+                f_touch.write(f"{description} touch-rebuild iteration {i} build {touch_rebuild_time:.2f}s\n")
+                f_touch.flush()
+                print(f"  [touch-rebuild] Build: {touch_rebuild_time:.2f}s")
+
                 stop_docker(container_name)
                 build_path = source_dir / "build"
                 if build_path.exists():
                     shutil.rmtree(build_path)
 
-        print(f"\nResults written to {no_cache_file} and {with_cache_file}")
+        print(f"\nResults written to {no_cache_file}, {with_cache_file} and {touch_file}")
 
 
 def main():
@@ -181,13 +211,12 @@ def main():
 
     toolchains = [
         ("toolchains/environments/linux-kitware-paraview-vtk-mini.cmake", "mini configuration"),
-        ("toolchains/environments/linux-kitware-paraview-vtk-dev.cmake", "dev configuration"),
     ]
 
     source_dir = clone_repo("https://github.com/tipi-build/vtk", "feature/benchmark-branch")
     image = pull_docker_image("tipibuild/linux-kitware-paraview@sha256:e0417824c4d417eb4d363f08954d11b94f9e6eb4ec76cee391db72e1e281fb18")
 
-    benchmark_vtk_project_cmake(source_dir, image, args.iterations, toolchains)
+    #benchmark_vtk_project_cmake(source_dir, image, args.iterations, toolchains)
     benchmark_vtk_project_cmake_re(source_dir, image, args.iterations, toolchains, args.jobs)
 
 
