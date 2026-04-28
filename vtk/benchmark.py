@@ -139,18 +139,19 @@ class DockerContainer:
 
 
 def clean_test_repo(source_dir):
-    """Reset the source tree to a clean state, undoing any modifications."""
+    """Reset the source tree to a clean state, undoing any modifications and untracked files."""
     print("  Cleaning test repo...")
     subprocess.run(["git", "checkout", "--", "."], cwd=str(source_dir), check=True)
+    subprocess.run(["git", "clean", "-fd"], cwd=str(source_dir), check=True)
 
 
-def modify_file_to_trigger_incremental_build(container):
-    """Inject a unique #define into vtkObject.h to trigger a cascade rebuild."""
+def modify_file_to_trigger_incremental_build(container, touch_file):
+    """Inject a unique #define into a header to trigger a cascade rebuild."""
     touch_uuid = str(uuid.uuid4())
-    container.run(f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" Common/Core/vtkObject.h')
+    container.run(f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" {touch_file}')
 
 
-def run_benchmarks(source_dir, image, iterations, toolchains, tool_name, output_dir, run_steps):
+def run_benchmarks(source_dir, image, iterations, toolchains, tool_name, output_dir, touch_file, run_steps):
     """Common loop: iterate toolchains x iterations, run tool-specific steps inside a container."""
     results = []
 
@@ -165,7 +166,7 @@ def run_benchmarks(source_dir, image, iterations, toolchains, tool_name, output_
             log_dir = output_dir / "logs" / tool_name / tc_name / f"iter_{i}"
             with DockerContainer(image, source_dir, log_dir) as container:
                 result = BenchmarkResult(tool=tool_name, toolchain=tc_name, description=description, iteration=i)
-                run_steps(container, result, toolchain_path)
+                run_steps(container, result, toolchain_path, touch_file)
                 results.append(asdict(result))
 
             build_path = source_dir / "build"
@@ -175,7 +176,7 @@ def run_benchmarks(source_dir, image, iterations, toolchains, tool_name, output_
     return results
 
 
-def cmake_steps(container, result, toolchain):
+def cmake_steps(container, result, toolchain, touch_file):
     result.record("configure", container.run(f"tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain}", step="configure"))
     result.record("build", container.run("tipi run cmake --build ./build", step="build"))
 
@@ -183,12 +184,12 @@ def cmake_steps(container, result, toolchain):
     container.run("tipi run cmake --build ./build --target clean", step="clean")
     result.record("rebuild", container.run("tipi run cmake --build ./build", step="rebuild"))
 
-    modify_file_to_trigger_incremental_build(container)
+    modify_file_to_trigger_incremental_build(container, touch_file)
     result.record("touch_rebuild", container.run("tipi run cmake --build ./build", step="touch_rebuild"))
 
 
 def make_cmake_re_steps(jobs):
-    def cmake_re_steps(container, result, toolchain):
+    def cmake_re_steps(container, result, toolchain, touch_file):
         silo_key = str(uuid.uuid4())
         build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}'
 
@@ -199,7 +200,7 @@ def make_cmake_re_steps(jobs):
         container.run("cmake-re --build ./build --target clean --host", step="clean")
         result.record("build_with_cache", container.run(build_cmd, step="build_with_cache"))
 
-        modify_file_to_trigger_incremental_build(container)
+        modify_file_to_trigger_incremental_build(container, touch_file)
         result.record("touch_rebuild", container.run(build_cmd, step="touch_rebuild"))
 
     return cmake_re_steps
@@ -220,7 +221,8 @@ Expected JSON config format:
   ],
   "iterations":  "<number of benchmark iterations per toolchain (default: 1)>",
   "jobs":        "<number of parallel jobs for cmake-re builds (default: 1500)>",
-  "output_dir":  "<directory for logs and results (default: output)>"
+  "output_dir":  "<directory for logs and results (default: output)>",
+  "touch_file":  "<header file to modify for incremental rebuild test, relative to repo root>"
 }"""
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -232,8 +234,19 @@ Expected JSON config format:
     with open(args.config) as f:
         config = json.load(f)
 
+    required_keys = ["repo_url", "branch", "image", "toolchains", "touch_file"]
+    missing = [k for k in required_keys if k not in config]
+    if missing:
+        parser.error(f"missing required config keys: {', '.join(missing)}")
+
+    for i, tc in enumerate(config["toolchains"]):
+        for key in ("path", "description"):
+            if key not in tc:
+                parser.error(f"toolchains[{i}] is missing required key: {key}")
+
     iterations = config.get("iterations", 1)
     jobs = config.get("jobs", 1500)
+    touch_file = config["touch_file"]
     output_dir = Path(config.get("output_dir", "output"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -246,8 +259,8 @@ Expected JSON config format:
     image = pull_docker_image(config["image"])
 
     all_results = []
-    all_results.extend(run_benchmarks(source_dir, image, iterations, toolchains, "cmake", output_dir, cmake_steps))
-    all_results.extend(run_benchmarks(source_dir, image, iterations, toolchains, "cmake-re", output_dir, make_cmake_re_steps(jobs)))
+    all_results.extend(run_benchmarks(source_dir, image, iterations, toolchains, "cmake", output_dir, touch_file, cmake_steps))
+    all_results.extend(run_benchmarks(source_dir, image, iterations, toolchains, "cmake-re", output_dir, touch_file, make_cmake_re_steps(jobs)))
 
     results_file = output_dir / "benchmark-results.json"
     with open(results_file, "w") as f:
