@@ -3,6 +3,7 @@
 
 import argparse
 import getpass
+import json
 import os
 import shutil
 import subprocess
@@ -10,7 +11,19 @@ import tempfile
 import time
 import uuid
 import resource
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
+
+
+@dataclass
+class BenchmarkResult:
+    toolchain: str
+    description: str
+    iteration: int
+    timings: dict = field(default_factory=dict)
+
+    def record(self, step, elapsed):
+        self.timings[step] = round(elapsed, 2)
 
 def clone_repo(url, branch):
     """Clone a git repo into /tmp with the given branch and init submodules. Returns the repo path."""
@@ -112,106 +125,99 @@ def modify_file_to_trigger_incremental_build(container):
 
 def benchmark_vtk_project_cmake(source_dir, image, iterations, toolchains):
     """Benchmark cmake configure+build on VTK for each toolchain."""
+    results = []
+
     for toolchain, description in toolchains:
         tc_name = Path(toolchain).stem
-        build_file = f"cmake-run_build_{tc_name}.txt"
-        rebuild_file = f"cmake-run_rebuild_{tc_name}.txt"
-        touch_file = f"cmake-run_touch_rebuild_{tc_name}.txt"
         print(f"\n=== CMake benchmark: {description} ({tc_name}) ===")
-        with open(build_file, "w") as f_build, \
-             open(rebuild_file, "w") as f_rebuild, \
-             open(touch_file, "w") as f_touch:
-            for i in range(1, iterations + 1):
-                print(f"\n--- Iteration {i}/{iterations} ---")
-                clean_test_repo(source_dir)
-                container_name = str(uuid.uuid4())
-                container = start_docker(image, source_dir, container_name)
 
-                docker_exec(container, f"tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain}")
-                build_time = docker_exec(container, "tipi run cmake --build ./build")
+        for i in range(1, iterations + 1):
+            print(f"\n--- Iteration {i}/{iterations} ---")
+            clean_test_repo(source_dir)
+            container_name = str(uuid.uuid4())
+            container = start_docker(image, source_dir, container_name)
 
-                f_build.write(f"{description} iteration {i} build {build_time:.2f}s\n")
-                f_build.flush()
-                print(f"  [build] Build: {build_time:.2f}s")
+            result = BenchmarkResult(toolchain=tc_name, description=description, iteration=i)
 
-                # Clean then rebuild
-                docker_exec(container, "tipi run cmake --build ./build --target clean")
-                rebuild_time = docker_exec(container, "tipi run cmake --build ./build")
+            result.record("configure", docker_exec(container, f"tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain}"))
+            print(f"  [configure] {result.timings['configure']}s")
 
-                f_rebuild.write(f"{description} iteration {i} rebuild {rebuild_time:.2f}s\n")
-                f_rebuild.flush()
-                print(f"  [rebuild] Build: {rebuild_time:.2f}s")
+            result.record("build", docker_exec(container, "tipi run cmake --build ./build"))
+            print(f"  [build] {result.timings['build']}s")
 
-                modify_file_to_trigger_incremental_build(container)
+            # Clean then rebuild
+            docker_exec(container, "tipi run cmake --build ./build --target clean")
+            result.record("rebuild", docker_exec(container, "tipi run cmake --build ./build"))
+            print(f"  [rebuild] {result.timings['rebuild']}s")
 
+            modify_file_to_trigger_incremental_build(container)
+            result.record("touch_rebuild", docker_exec(container, "tipi run cmake --build ./build"))
+            print(f"  [touch-rebuild] {result.timings['touch_rebuild']}s")
 
-                touch_rebuild_time = docker_exec(container, "tipi run cmake --build ./build")
+            results.append(asdict(result))
 
-                f_touch.write(f"{description} iteration {i} touch-rebuild {touch_rebuild_time:.2f}s\n")
-                f_touch.flush()
-                print(f"  [touch-rebuild] Build: {touch_rebuild_time:.2f}s")
+            stop_docker(container_name)
+            build_path = source_dir / "build"
+            if build_path.exists():
+                shutil.rmtree(build_path)
 
-                stop_docker(container_name)
-                build_path = source_dir / "build"
-                if build_path.exists():
-                    shutil.rmtree(build_path)
-
-        print(f"\nResults written to {build_file}, {rebuild_file} and {touch_file}")
+    output_file = "cmake-benchmark.json"
+    with open(output_file, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nResults written to {output_file}")
 
 
 def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains, jobs):
     """Benchmark cmake-re: no-cache run (seed) then with-cache run, for each toolchain."""
+    results = []
+
     for toolchain, description in toolchains:
         tc_name = Path(toolchain).stem
-        no_cache_file = f"cmake-re-run_no_cache_{tc_name}.txt"
-        with_cache_file = f"cmake-re-run_with_cache_{tc_name}.txt"
-        touch_file = f"cmake-re-run_touch_rebuild_{tc_name}.txt"
         print(f"\n=== cmake-re benchmark with toolchain: {tc_name} ===")
-        with open(no_cache_file, "w") as f_no_cache, \
-             open(with_cache_file, "w") as f_with_cache, \
-             open(touch_file, "w") as f_touch:
-            for i in range(1, iterations + 1):
-                print(f"\n--- Iteration {i}/{iterations} ---")
-                clean_test_repo(source_dir)
-                container_name = str(uuid.uuid4())
-                container = start_docker(image, source_dir, container_name)
-                silo_key = str(uuid.uuid4())
 
-                # First run: no cache (seed the RBE cache)
-                print("  [no-cache] cmake-re configure + build...")
-                docker_exec(container, f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed")
-                build_time_no = docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}')
+        for i in range(1, iterations + 1):
+            print(f"\n--- Iteration {i}/{iterations} ---")
+            clean_test_repo(source_dir)
+            container_name = str(uuid.uuid4())
+            container = start_docker(image, source_dir, container_name)
+            silo_key = str(uuid.uuid4())
 
-                f_no_cache.write(f"{description} no-cache iteration {i} build {build_time_no:.2f}s\n")
-                f_no_cache.flush()
-                print(f"  [no-cache] Build: {build_time_no:.2f}s")
+            result = BenchmarkResult(toolchain=tc_name, description=description, iteration=i)
 
-                # Clean build artifacts, keep RBE cache warm
-                docker_exec(container, f'cmake-re --build ./build --target clean --host')
+            # Configure
+            print("  [no-cache] cmake-re configure + build...")
+            result.record("configure", docker_exec(container, f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed"))
+            print(f"  [configure] {result.timings['configure']}s")
 
-                # Second run: with warm RBE cache
-                print("  [with-cache] cmake-re configure + build...")
-                build_time_cache = docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}')
+            # First build: no cache (seed the RBE cache)
+            result.record("build_no_cache", docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}'))
+            print(f"  [no-cache] {result.timings['build_no_cache']}s")
 
-                f_with_cache.write(f"{description} with-cache iteration {i} build {build_time_cache:.2f}s\n")
-                f_with_cache.flush()
-                print(f"  [with-cache] Build: {build_time_cache:.2f}s")
+            # Clean build artifacts, keep RBE cache warm
+            docker_exec(container, f'cmake-re --build ./build --target clean --host')
 
-                modify_file_to_trigger_incremental_build(container)
+            # Second build: with warm RBE cache
+            print("  [with-cache] cmake-re build...")
+            result.record("build_with_cache", docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}'))
+            print(f"  [with-cache] {result.timings['build_with_cache']}s")
 
-                print("  [touch-rebuild] cmake-re build after header touch...")
-                touch_rebuild_time = docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}')
+            # Touch rebuild
+            modify_file_to_trigger_incremental_build(container)
+            print("  [touch-rebuild] cmake-re build after header touch...")
+            result.record("touch_rebuild", docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}'))
+            print(f"  [touch-rebuild] {result.timings['touch_rebuild']}s")
 
-                f_touch.write(f"{description} touch-rebuild iteration {i} build {touch_rebuild_time:.2f}s\n")
-                f_touch.flush()
-                print(f"  [touch-rebuild] Build: {touch_rebuild_time:.2f}s")
+            results.append(asdict(result))
 
-                stop_docker(container_name)
-                build_path = source_dir / "build"
-                if build_path.exists():
-                    shutil.rmtree(build_path)
+            stop_docker(container_name)
+            build_path = source_dir / "build"
+            if build_path.exists():
+                shutil.rmtree(build_path)
 
-        print(f"\nResults written to {no_cache_file}, {with_cache_file} and {touch_file}")
+    output_file = "cmake-re-benchmark.json"
+    with open(output_file, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nResults written to {output_file}")
 
 
 def main():
