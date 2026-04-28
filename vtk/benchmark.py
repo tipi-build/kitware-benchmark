@@ -25,6 +25,7 @@ class BenchmarkConfig:
     output_dir: Path
     touch_file: str
     rbe_service: str
+    jobs: int
 
 
 @dataclass
@@ -265,7 +266,6 @@ Expected JSON config format:
             if key not in tc:
                 parser.error(f"toolchains[{i}] is missing required key: {key}")
 
-    jobs = config.get("jobs", 1500)
     output_dir = Path(config.get("output_dir", "output"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -283,12 +283,13 @@ Expected JSON config format:
         output_dir=output_dir,
         touch_file=config["touch_file"],
         rbe_service=config.get("rbe_service", "kernite.cluster.engflow.com:443"),
+        jobs=config.get("jobs", 1500),
     )
 
     all_results = []
     suite_start = time.perf_counter()
     all_results.extend(run_benchmarks(cfg, "cmake", cmake_steps))
-    all_results.extend(run_benchmarks(cfg, "cmake-re", make_cmake_re_steps(jobs)))
+    all_results.extend(run_benchmarks(cfg, "cmake-re", make_cmake_re_steps(cfg.jobs)))
     suite_elapsed = time.perf_counter() - suite_start
 
     results_file = output_dir / "benchmark-results.json"
