@@ -98,6 +98,18 @@ def docker_exec(container_name, cmd):
     return elapsed
 
 
+def clean_test_repo(source_dir):
+    """Reset the source tree to a clean state, undoing any modifications."""
+    print("  Cleaning test repo...")
+    subprocess.run(["git", "checkout", "--", "."], cwd=str(source_dir), check=True)
+
+
+def modify_file_to_trigger_incremental_build(container):
+    """Inject a unique #define into vtkObject.h to trigger a cascade rebuild."""
+    touch_uuid = str(uuid.uuid4())
+    docker_exec(container, f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" Common/Core/vtkObject.h')
+
+
 def benchmark_vtk_project_cmake(source_dir, image, iterations, toolchains):
     """Benchmark cmake configure+build on VTK for each toolchain."""
     for toolchain, description in toolchains:
@@ -111,6 +123,7 @@ def benchmark_vtk_project_cmake(source_dir, image, iterations, toolchains):
              open(touch_file, "w") as f_touch:
             for i in range(1, iterations + 1):
                 print(f"\n--- Iteration {i}/{iterations} ---")
+                clean_test_repo(source_dir)
                 container_name = str(uuid.uuid4())
                 container = start_docker(image, source_dir, container_name)
 
@@ -129,9 +142,9 @@ def benchmark_vtk_project_cmake(source_dir, image, iterations, toolchains):
                 f_rebuild.flush()
                 print(f"  [rebuild] Build: {rebuild_time:.2f}s")
 
-                # Touch vtkVersionQuick.h.in with a unique define to trigger cascade rebuild
-                touch_uuid = str(uuid.uuid4())
-                docker_exec(container, f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" Common/Core/vtkVersionQuick.h.in')
+                modify_file_to_trigger_incremental_build(container)
+
+
                 touch_rebuild_time = docker_exec(container, "tipi run cmake --build ./build")
 
                 f_touch.write(f"{description} iteration {i} touch-rebuild {touch_rebuild_time:.2f}s\n")
@@ -159,6 +172,7 @@ def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains, jo
              open(touch_file, "w") as f_touch:
             for i in range(1, iterations + 1):
                 print(f"\n--- Iteration {i}/{iterations} ---")
+                clean_test_repo(source_dir)
                 container_name = str(uuid.uuid4())
                 container = start_docker(image, source_dir, container_name)
                 silo_key = str(uuid.uuid4())
@@ -183,9 +197,8 @@ def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains, jo
                 f_with_cache.flush()
                 print(f"  [with-cache] Build: {build_time_cache:.2f}s")
 
-                # Touch vtkVersionQuick.h.in with a unique define to trigger cascade rebuild
-                touch_uuid = str(uuid.uuid4())
-                docker_exec(container, f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" Common/Core/vtkVersionQuick.h.in')
+                modify_file_to_trigger_incremental_build(container)
+
                 print("  [touch-rebuild] cmake-re build after header touch...")
                 touch_rebuild_time = docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}')
 
