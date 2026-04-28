@@ -147,99 +147,78 @@ def modify_file_to_trigger_incremental_build(container):
     container.exec(f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" Common/Core/vtkObject.h')
 
 
-def benchmark_vtk_project_cmake(source_dir, image, iterations, toolchains):
-    """Benchmark cmake configure+build on VTK for each toolchain."""
+def run_benchmarks(source_dir, image, iterations, toolchains, tool_name, output_file, run_steps):
+    """Common loop: iterate toolchains x iterations, run tool-specific steps inside a container."""
     results = []
 
     for toolchain, description in toolchains:
         tc_name = Path(toolchain).stem
-        print(f"\n=== CMake benchmark: {description} ({tc_name}) ===")
+        print(f"\n=== {tool_name} benchmark: {description} ({tc_name}) ===")
 
         for i in range(1, iterations + 1):
             print(f"\n--- Iteration {i}/{iterations} ---")
             clean_test_repo(source_dir)
 
-            log_dir = f"logs/cmake/{tc_name}/iter_{i}"
+            log_dir = f"logs/{tool_name}/{tc_name}/iter_{i}"
             with DockerContainer(image, source_dir, log_dir) as container:
                 result = BenchmarkResult(toolchain=tc_name, description=description, iteration=i)
-
-                result.record("configure", container.exec(f"tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain}", step="configure"))
-                print(f"  [configure] {result.timings['configure']}s")
-
-                result.record("build", container.exec("tipi run cmake --build ./build", step="build"))
-                print(f"  [build] {result.timings['build']}s")
-
-                # Clean then rebuild
-                container.exec("tipi run cmake --build ./build --target clean", step="clean")
-                result.record("rebuild", container.exec("tipi run cmake --build ./build", step="rebuild"))
-                print(f"  [rebuild] {result.timings['rebuild']}s")
-
-                modify_file_to_trigger_incremental_build(container)
-                result.record("touch_rebuild", container.exec("tipi run cmake --build ./build", step="touch_rebuild"))
-                print(f"  [touch-rebuild] {result.timings['touch_rebuild']}s")
-
+                run_steps(container, result, toolchain)
                 results.append(asdict(result))
 
             build_path = source_dir / "build"
             if build_path.exists():
                 shutil.rmtree(build_path)
 
-    output_file = "cmake-benchmark.json"
     with open(output_file, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nResults written to {output_file}")
 
 
-def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains, jobs):
-    """Benchmark cmake-re: no-cache run (seed) then with-cache run, for each toolchain."""
-    results = []
+def cmake_steps(container, result, toolchain):
+    result.record("configure", container.exec(f"tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain}", step="configure"))
+    print(f"  [configure] {result.timings['configure']}s")
 
-    for toolchain, description in toolchains:
-        tc_name = Path(toolchain).stem
-        print(f"\n=== cmake-re benchmark with toolchain: {tc_name} ===")
+    result.record("build", container.exec("tipi run cmake --build ./build", step="build"))
+    print(f"  [build] {result.timings['build']}s")
 
-        for i in range(1, iterations + 1):
-            print(f"\n--- Iteration {i}/{iterations} ---")
-            clean_test_repo(source_dir)
+    # Clean then rebuild
+    container.exec("tipi run cmake --build ./build --target clean", step="clean")
+    result.record("rebuild", container.exec("tipi run cmake --build ./build", step="rebuild"))
+    print(f"  [rebuild] {result.timings['rebuild']}s")
 
-            log_dir = f"logs/cmake-re/{tc_name}/iter_{i}"
-            with DockerContainer(image, source_dir, log_dir) as container:
-                silo_key = str(uuid.uuid4())
-                result = BenchmarkResult(toolchain=tc_name, description=description, iteration=i)
+    modify_file_to_trigger_incremental_build(container)
+    result.record("touch_rebuild", container.exec("tipi run cmake --build ./build", step="touch_rebuild"))
+    print(f"  [touch-rebuild] {result.timings['touch_rebuild']}s")
 
-                # Configure
-                print("  [no-cache] cmake-re configure + build...")
-                result.record("configure", container.exec(f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed", step="configure"))
-                print(f"  [configure] {result.timings['configure']}s")
 
-                # First build: no cache (seed the RBE cache)
-                result.record("build_no_cache", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}', step="build_no_cache"))
-                print(f"  [no-cache] {result.timings['build_no_cache']}s")
+def make_cmake_re_steps(jobs):
+    def cmake_re_steps(container, result, toolchain):
+        silo_key = str(uuid.uuid4())
 
-                # Clean build artifacts, keep RBE cache warm
-                container.exec(f'cmake-re --build ./build --target clean --host', step="clean")
+        # Configure
+        print("  [no-cache] cmake-re configure + build...")
+        result.record("configure", container.exec(f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed", step="configure"))
+        print(f"  [configure] {result.timings['configure']}s")
 
-                # Second build: with warm RBE cache
-                print("  [with-cache] cmake-re build...")
-                result.record("build_with_cache", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}', step="build_with_cache"))
-                print(f"  [with-cache] {result.timings['build_with_cache']}s")
+        # First build: no cache (seed the RBE cache)
+        result.record("build_no_cache", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}', step="build_no_cache"))
+        print(f"  [no-cache] {result.timings['build_no_cache']}s")
 
-                # Touch rebuild
-                modify_file_to_trigger_incremental_build(container)
-                print("  [touch-rebuild] cmake-re build after header touch...")
-                result.record("touch_rebuild", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}', step="touch_rebuild"))
-                print(f"  [touch-rebuild] {result.timings['touch_rebuild']}s")
+        # Clean build artifacts, keep RBE cache warm
+        container.exec('cmake-re --build ./build --target clean --host', step="clean")
 
-                results.append(asdict(result))
+        # Second build: with warm RBE cache
+        print("  [with-cache] cmake-re build...")
+        result.record("build_with_cache", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}', step="build_with_cache"))
+        print(f"  [with-cache] {result.timings['build_with_cache']}s")
 
-            build_path = source_dir / "build"
-            if build_path.exists():
-                shutil.rmtree(build_path)
+        # Touch rebuild
+        modify_file_to_trigger_incremental_build(container)
+        print("  [touch-rebuild] cmake-re build after header touch...")
+        result.record("touch_rebuild", container.exec(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}', step="touch_rebuild"))
+        print(f"  [touch-rebuild] {result.timings['touch_rebuild']}s")
 
-    output_file = "cmake-re-benchmark.json"
-    with open(output_file, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"\nResults written to {output_file}")
+    return cmake_re_steps
 
 
 def main():
@@ -257,8 +236,8 @@ def main():
     source_dir = clone_repo("https://github.com/tipi-build/vtk", "feature/benchmark-branch")
     image = pull_docker_image("tipibuild/linux-kitware-paraview@sha256:e0417824c4d417eb4d363f08954d11b94f9e6eb4ec76cee391db72e1e281fb18")
 
-    benchmark_vtk_project_cmake(source_dir, image, args.iterations, toolchains)
-    benchmark_vtk_project_cmake_re(source_dir, image, args.iterations, toolchains, args.jobs)
+    run_benchmarks(source_dir, image, args.iterations, toolchains, "cmake", "cmake-benchmark.json", cmake_steps)
+    run_benchmarks(source_dir, image, args.iterations, toolchains, "cmake-re", "cmake-re-benchmark.json", make_cmake_re_steps(args.jobs))
 
 
 if __name__ == "__main__":
