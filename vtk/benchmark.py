@@ -26,6 +26,7 @@ class BenchmarkConfig:
     touch_file: str
     rbe_service: str
     jobs: int
+    rbe_mode: str
 
 
 @dataclass
@@ -74,10 +75,11 @@ def pull_docker_image(image):
 class DockerContainer:
     """Context manager for a docker container lifecycle."""
 
-    def __init__(self, image, source_dir, log_dir, rbe_service):
+    def __init__(self, image, source_dir, log_dir, rbe_service, rbe_mode):
         self.image = image
         self.source_dir = source_dir
         self.rbe_service = rbe_service
+        self.rbe_mode = rbe_mode
         self.name = str(uuid.uuid4())
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -90,6 +92,15 @@ class DockerContainer:
         home = os.environ["HOME"]
 
         print(f"Starting container {self.name}...")
+
+        rbe_env = []
+        if self.rbe_mode == "racing":
+            rbe_env = [
+                "-e", "RBE_local_resource_fraction=0.3",
+                "-e", "RBE_exec_strategy=racing",
+                "-e", "RBE_racing_bias=5",
+            ]
+
         subprocess.run([
             "docker", "run",
             "--platform", "linux/amd64",
@@ -100,7 +111,8 @@ class DockerContainer:
             "-e", "TIPI_DISABLE_AR_RANLIB_DRIVER=ON",
             "-e", "TIPI_CACHE_CONSUME_ONLY=ON",
             "-e", "TIPI_CACHE_FORCE_ENABLE=OFF",
-            "-e", "HOME",
+            *rbe_env,
+            "-e", f"RBE_platform=linux-amd64",
             "-e", f"RBE_service={self.rbe_service}",
             "-e", f"RBE_tls_client_auth_key={home}/engflow-mTLS/engflow.key",
             "-e", f"RBE_tls_client_auth_cert={home}/engflow-mTLS/engflow.crt",
@@ -185,7 +197,7 @@ def run_benchmarks(cfg, tool_name, run_steps):
             clean_test_repo(cfg.source_dir)
 
             log_dir = cfg.output_dir / "logs" / tool_name / tc_name / f"iter_{i}"
-            with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service) as container:
+            with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.rbe_mode) as container:
                 result = BenchmarkResult(tool=tool_name, toolchain=tc_name, description=description, iteration=i)
                 run_steps(container, result, toolchain_path, cfg)
                 results.append(asdict(result))
@@ -241,7 +253,8 @@ Expected JSON config format:
   "jobs":        "<number of parallel jobs for cmake-re builds (default: 1500)>",
   "output_dir":  "<directory for logs and results (default: output)>",
   "touch_file":  "<header file to modify for incremental rebuild test, relative to repo root>",
-  "rbe_service": "<RBE endpoint host:port (default: kernite.cluster.engflow.com:443)>"
+  "rbe_service": "<RBE endpoint host:port (default: kernite.cluster.engflow.com:443)>",
+  "rbe_mode":    "<RBE execution mode: 'remote' or 'racing' (required)>"
 }"""
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -258,7 +271,7 @@ Expected JSON config format:
     except FileNotFoundError:
         parser.error(f"config file not found: {args.config}")
 
-    required_keys = ["repo_url", "branch", "image", "toolchains", "touch_file"]
+    required_keys = ["repo_url", "branch", "image", "toolchains", "touch_file", "rbe_mode"]
     missing = [k for k in required_keys if k not in config]
     if missing:
         parser.error(f"missing required config keys: {', '.join(missing)}")
@@ -286,6 +299,7 @@ Expected JSON config format:
         touch_file=config["touch_file"],
         rbe_service=config.get("rbe_service", "kernite.cluster.engflow.com:443"),
         jobs=config.get("jobs", 1500),
+        rbe_mode=config["rbe_mode"],
     )
 
     all_results = []
