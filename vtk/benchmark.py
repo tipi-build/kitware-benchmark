@@ -43,7 +43,7 @@ class BenchmarkResult:
 
 def clone_repo(url, branch):
     """Clone or reuse a git repo in /tmp with the given branch and init submodules. Returns the repo path."""
-    repo_name = url.rstrip("/").split("/")[-1].replace(".git", "")
+    repo_name = url.rstrip("/").split("/")[-1].removesuffix(".git")
     repo_path = Path(tempfile.gettempdir()) / repo_name
 
     if repo_path.exists():
@@ -187,7 +187,7 @@ def run_benchmarks(cfg, tool_name, run_steps):
             log_dir = cfg.output_dir / "logs" / tool_name / tc_name / f"iter_{i}"
             with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service) as container:
                 result = BenchmarkResult(tool=tool_name, toolchain=tc_name, description=description, iteration=i)
-                run_steps(container, result, toolchain_path, cfg.touch_file)
+                run_steps(container, result, toolchain_path, cfg)
                 results.append(asdict(result))
 
             build_path = cfg.source_dir / "build"
@@ -197,7 +197,7 @@ def run_benchmarks(cfg, tool_name, run_steps):
     return results
 
 
-def cmake_steps(container, result, toolchain, touch_file):
+def cmake_steps(container, result, toolchain, cfg):
     result.record("configure", container.run(f"tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain}", step="configure"))
     result.record("build", container.run("tipi run cmake --build ./build", step="build"))
 
@@ -205,26 +205,23 @@ def cmake_steps(container, result, toolchain, touch_file):
     container.run("tipi run cmake --build ./build --target clean", step="clean")
     result.record("rebuild", container.run("tipi run cmake --build ./build", step="rebuild"))
 
-    modify_file_to_trigger_incremental_build(container, touch_file)
+    modify_file_to_trigger_incremental_build(container, cfg.touch_file)
     result.record("touch_rebuild", container.run("tipi run cmake --build ./build", step="touch_rebuild"))
 
 
-def make_cmake_re_steps(jobs):
-    def cmake_re_steps(container, result, toolchain, touch_file):
-        silo_key = str(uuid.uuid4())
-        build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}'
+def cmake_re_steps(container, result, toolchain, cfg):
+    silo_key = str(uuid.uuid4())
+    build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{cfg.jobs}'
 
-        result.record("configure", container.run(f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed", step="configure"))
-        result.record("build_no_cache", container.run(build_cmd, step="build_no_cache"))
+    result.record("configure", container.run(f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed", step="configure"))
+    result.record("build_no_cache", container.run(build_cmd, step="build_no_cache"))
 
-        # Clean build artifacts, keep RBE cache warm
-        container.run("cmake-re --build ./build --target clean --host", step="clean")
-        result.record("build_with_cache", container.run(build_cmd, step="build_with_cache"))
+    # Clean build artifacts, keep RBE cache warm
+    container.run("cmake-re --build ./build --target clean --host", step="clean")
+    result.record("build_with_cache", container.run(build_cmd, step="build_with_cache"))
 
-        modify_file_to_trigger_incremental_build(container, touch_file)
-        result.record("touch_rebuild", container.run(build_cmd, step="touch_rebuild"))
-
-    return cmake_re_steps
+    modify_file_to_trigger_incremental_build(container, cfg.touch_file)
+    result.record("touch_rebuild", container.run(build_cmd, step="touch_rebuild"))
 
 
 def main():
@@ -253,8 +250,13 @@ Expected JSON config format:
     parser.add_argument("config", help="path to JSON configuration file")
     args = parser.parse_args()
 
-    with open(args.config) as f:
-        config = json.load(f)
+    try:
+        with open(args.config) as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        parser.error(f"invalid JSON in {args.config}: {e}")
+    except FileNotFoundError:
+        parser.error(f"config file not found: {args.config}")
 
     required_keys = ["repo_url", "branch", "image", "toolchains", "touch_file"]
     missing = [k for k in required_keys if k not in config]
@@ -289,7 +291,7 @@ Expected JSON config format:
     all_results = []
     suite_start = time.perf_counter()
     all_results.extend(run_benchmarks(cfg, "cmake", cmake_steps))
-    all_results.extend(run_benchmarks(cfg, "cmake-re", make_cmake_re_steps(cfg.jobs)))
+    all_results.extend(run_benchmarks(cfg, "cmake-re", cmake_re_steps))
     suite_elapsed = time.perf_counter() - suite_start
 
     results_file = output_dir / "benchmark-results.json"
