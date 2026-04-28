@@ -155,7 +155,7 @@ class DockerContainer:
 
         print(f"  Done in {elapsed:.2f}s (log: {log_file})")
         if proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, cmd)
+            raise subprocess.CalledProcessError(proc.returncode, f"[{label}] {cmd}")
         return elapsed
 
 
@@ -169,7 +169,7 @@ def clean_test_repo(source_dir):
 def modify_file_to_trigger_incremental_build(container, touch_file):
     """Inject a unique #define into a header to trigger a cascade rebuild."""
     touch_uuid = str(uuid.uuid4())
-    container.run(f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" {touch_file}')
+    container.run(f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" "{touch_file}"')
 
 
 def run_benchmarks(cfg, tool_name, run_steps):
@@ -198,7 +198,7 @@ def run_benchmarks(cfg, tool_name, run_steps):
 
 
 def cmake_steps(container, result, toolchain, cfg):
-    result.record("configure", container.run(f"tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain}", step="configure"))
+    result.record("configure", container.run(f'tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}"', step="configure"))
     result.record("build", container.run("tipi run cmake --build ./build", step="build"))
 
     # Clean then rebuild
@@ -213,7 +213,7 @@ def cmake_re_steps(container, result, toolchain, cfg):
     silo_key = str(uuid.uuid4())
     build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{cfg.jobs}'
 
-    result.record("configure", container.run(f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed", step="configure"))
+    result.record("configure", container.run(f'cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure"))
     result.record("build_no_cache", container.run(build_cmd, step="build_no_cache"))
 
     # Clean build artifacts, keep RBE cache warm
