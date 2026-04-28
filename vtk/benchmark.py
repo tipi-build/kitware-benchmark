@@ -17,6 +17,16 @@ from pathlib import Path
 
 
 @dataclass
+class BenchmarkConfig:
+    source_dir: Path
+    image: str
+    iterations: int
+    toolchains: list
+    output_dir: Path
+    touch_file: str
+
+
+@dataclass
 class BenchmarkResult:
     tool: str
     toolchain: str
@@ -30,16 +40,19 @@ class BenchmarkResult:
 
 
 def clone_repo(url, branch):
-    """Clone a git repo into /tmp with the given branch and init submodules. Returns the repo path."""
+    """Clone or reuse a git repo in /tmp with the given branch and init submodules. Returns the repo path."""
     repo_name = url.rstrip("/").split("/")[-1].replace(".git", "")
     repo_path = Path(tempfile.gettempdir()) / repo_name
 
     if repo_path.exists():
-        print(f"  Removing existing {repo_path}")
-        shutil.rmtree(repo_path)
-
-    print(f"Cloning {url} (branch: {branch})...")
-    subprocess.run(["git", "clone", "--branch", branch, url, str(repo_path)], check=True)
+        print(f"Reusing existing clone at {repo_path}, resetting to origin/{branch}...")
+        subprocess.run(["git", "fetch", "origin"], cwd=str(repo_path), check=True)
+        subprocess.run(["git", "checkout", branch], cwd=str(repo_path), check=True)
+        subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=str(repo_path), check=True)
+        subprocess.run(["git", "clean", "-fdx"], cwd=str(repo_path), check=True)
+    else:
+        print(f"Cloning {url} (branch: {branch})...")
+        subprocess.run(["git", "clone", "--branch", branch, url, str(repo_path)], check=True)
 
     print("Initializing submodules...")
     subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=str(repo_path), check=True)
@@ -96,13 +109,18 @@ class DockerContainer:
             "sleep", "infinity",
         ], check=True)
 
-        # Create the user inside the container
-        subprocess.run([
-            "docker", "exec", "-u", "0", self.name,
-            "useradd", "-d", home, "-u", str(uid), username,
-        ], check=False)
+        try:
+            # Create the user inside the container
+            subprocess.run([
+                "docker", "exec", "-u", "0", self.name,
+                "useradd", "-d", home, "-u", str(uid), username,
+            ], check=False)
 
-        print(f"Container running: {self.name}")
+            print(f"Container running: {self.name}")
+        except Exception:
+            subprocess.run(["docker", "stop", "-t0", self.name], check=False)
+            raise
+
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -151,25 +169,25 @@ def modify_file_to_trigger_incremental_build(container, touch_file):
     container.run(f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" {touch_file}')
 
 
-def run_benchmarks(source_dir, image, iterations, toolchains, tool_name, output_dir, touch_file, run_steps):
+def run_benchmarks(cfg, tool_name, run_steps):
     """Common loop: iterate toolchains x iterations, run tool-specific steps inside a container."""
     results = []
 
-    for toolchain_path, description in toolchains:
+    for toolchain_path, description in cfg.toolchains:
         tc_name = Path(toolchain_path).stem
         print(f"\n=== {tool_name} benchmark: {description} ({tc_name}) ===")
 
-        for i in range(1, iterations + 1):
-            print(f"\n--- Iteration {i}/{iterations} ---")
-            clean_test_repo(source_dir)
+        for i in range(1, cfg.iterations + 1):
+            print(f"\n--- Iteration {i}/{cfg.iterations} ---")
+            clean_test_repo(cfg.source_dir)
 
-            log_dir = output_dir / "logs" / tool_name / tc_name / f"iter_{i}"
-            with DockerContainer(image, source_dir, log_dir) as container:
+            log_dir = cfg.output_dir / "logs" / tool_name / tc_name / f"iter_{i}"
+            with DockerContainer(cfg.image, cfg.source_dir, log_dir) as container:
                 result = BenchmarkResult(tool=tool_name, toolchain=tc_name, description=description, iteration=i)
-                run_steps(container, result, toolchain_path, touch_file)
+                run_steps(container, result, toolchain_path, cfg.touch_file)
                 results.append(asdict(result))
 
-            build_path = source_dir / "build"
+            build_path = cfg.source_dir / "build"
             if build_path.exists():
                 shutil.rmtree(build_path)
 
@@ -244,23 +262,28 @@ Expected JSON config format:
             if key not in tc:
                 parser.error(f"toolchains[{i}] is missing required key: {key}")
 
-    iterations = config.get("iterations", 1)
     jobs = config.get("jobs", 1500)
-    touch_file = config["touch_file"]
     output_dir = Path(config.get("output_dir", "output"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    toolchains = [(tc["path"], tc["description"]) for tc in config["toolchains"]]
-
     target = 65535
-    resource.setrlimit(resource.RLIMIT_NOFILE, (target, target))
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, target))
+    except (ValueError, OSError) as e:
+        print(f"Warning: could not set NOFILE limit to {target}: {e}")
 
-    source_dir = clone_repo(config["repo_url"], config["branch"])
-    image = pull_docker_image(config["image"])
+    cfg = BenchmarkConfig(
+        source_dir=clone_repo(config["repo_url"], config["branch"]),
+        image=pull_docker_image(config["image"]),
+        iterations=config.get("iterations", 1),
+        toolchains=[(tc["path"], tc["description"]) for tc in config["toolchains"]],
+        output_dir=output_dir,
+        touch_file=config["touch_file"],
+    )
 
     all_results = []
-    all_results.extend(run_benchmarks(source_dir, image, iterations, toolchains, "cmake", output_dir, touch_file, cmake_steps))
-    all_results.extend(run_benchmarks(source_dir, image, iterations, toolchains, "cmake-re", output_dir, touch_file, make_cmake_re_steps(jobs)))
+    all_results.extend(run_benchmarks(cfg, "cmake", cmake_steps))
+    all_results.extend(run_benchmarks(cfg, "cmake-re", make_cmake_re_steps(jobs)))
 
     results_file = output_dir / "benchmark-results.json"
     with open(results_file, "w") as f:
