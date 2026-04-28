@@ -216,7 +216,7 @@ def main():
     source_dir = clone_repo("https://github.com/tipi-build/vtk", "feature/benchmark-branch")
     image = pull_docker_image("tipibuild/linux-kitware-paraview@sha256:e0417824c4d417eb4d363f08954d11b94f9e6eb4ec76cee391db72e1e281fb18")
 
-    #benchmark_vtk_project_cmake(source_dir, image, args.iterations, toolchains)
+    benchmark_vtk_project_cmake(source_dir, image, args.iterations, toolchains)
     benchmark_vtk_project_cmake_re(source_dir, image, args.iterations, toolchains, args.jobs)
 
 
