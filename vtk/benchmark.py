@@ -126,7 +126,7 @@ def benchmark_vtk_project_cmake(source_dir, image, iterations, toolchains):
         print(f"\nResults written to {output_file}")
 
 
-def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains):
+def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains, jobs):
     """Benchmark cmake-re: no-cache run (seed) then with-cache run, for each toolchain."""
     for toolchain, description in toolchains:
         tc_name = Path(toolchain).stem
@@ -144,7 +144,7 @@ def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains):
                 # First run: no cache (seed the RBE cache)
                 print("  [no-cache] cmake-re configure + build...")
                 docker_exec(container, f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed")
-                build_time_no = docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j1500')
+                build_time_no = docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}')
 
                 f_no_cache.write(f"{description} no-cache iteration {i} build {build_time_no:.2f}s\n")
                 f_no_cache.flush()
@@ -157,7 +157,7 @@ def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains):
                 # Second run: with warm RBE cache
                 print("  [with-cache] cmake-re configure + build...")
                 docker_exec(container, f"cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE={toolchain} --host --distributed")
-                build_time_cache = docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j1500')
+                build_time_cache = docker_exec(container, f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{jobs}')
 
                 f_with_cache.write(f"{description} with-cache iteration {i} build {build_time_cache:.2f}s\n")
                 f_with_cache.flush()
@@ -174,6 +174,7 @@ def benchmark_vtk_project_cmake_re(source_dir, image, iterations, toolchains):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--iterations", type=int, default=1)
+    parser.add_argument("-j", "--jobs", type=int, default=1500, help="number of parallel jobs for cmake-re builds")
     args = parser.parse_args()
     target = 65535
     resource.setrlimit(resource.RLIMIT_NOFILE, (target, target))
@@ -187,7 +188,7 @@ def main():
     image = pull_docker_image("tipibuild/linux-kitware-paraview@sha256:e0417824c4d417eb4d363f08954d11b94f9e6eb4ec76cee391db72e1e281fb18")
 
     benchmark_vtk_project_cmake(source_dir, image, args.iterations, toolchains)
-    benchmark_vtk_project_cmake_re(source_dir, image, args.iterations, toolchains)
+    benchmark_vtk_project_cmake_re(source_dir, image, args.iterations, toolchains, args.jobs)
 
 
 if __name__ == "__main__":
