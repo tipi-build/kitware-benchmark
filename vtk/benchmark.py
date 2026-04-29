@@ -44,7 +44,8 @@ class BenchmarkResult:
 
 def clone_repo(url, branch):
     """Clone or reuse a git repo in /tmp with the given branch and init submodules. Returns the repo path."""
-    repo_name = url.rstrip("/").split("/")[-1].removesuffix(".git")
+    name = url.rstrip("/").split("/")[-1]
+    repo_name = name[:-4] if name.endswith(".git") else name
     repo_path = Path(tempfile.gettempdir()) / repo_name
 
     if repo_path.exists():
