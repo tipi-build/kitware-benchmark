@@ -2,6 +2,7 @@
 """Benchmark configure and build times for CMake and cmake-re."""
 
 import argparse
+import csv
 import getpass
 import json
 import os
@@ -258,6 +259,27 @@ def cmake_re_steps(container, result, toolchain, cfg):
     zip_tmp_excluding_repo(container, cfg.source_dir, container.log_dir)
 
 
+def write_results_csv(results, csv_path):
+    """Write benchmark results list to a CSV file."""
+    timing_keys = []
+    for r in results:
+        for k in r["timings"]:
+            if k not in timing_keys:
+                timing_keys.append(k)
+
+    fieldnames = ["tool", "toolchain", "description", "iteration"] + timing_keys
+
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in results:
+            row = {k: r[k] for k in ("tool", "toolchain", "description", "iteration")}
+            row.update(r["timings"])
+            writer.writerow(row)
+
+    print(f"CSV results written to {csv_path}")
+
+
 def main():
     example_config = """\
 Expected JSON config format:
@@ -333,6 +355,9 @@ Expected JSON config format:
     results_file = output_dir / "benchmark-results.json"
     with open(results_file, "w") as f:
         json.dump(all_results, f, indent=2)
+
+    csv_file = output_dir / "benchmark-results.csv"
+    write_results_csv(all_results, csv_file)
 
     minutes, seconds = divmod(int(suite_elapsed), 60)
     hours, minutes = divmod(minutes, 60)
