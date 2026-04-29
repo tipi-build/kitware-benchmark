@@ -11,7 +11,7 @@
   "iterations": 1,
   "jobs": 1500,
   "output_dir": "output",
-  "touch_file": "Common/Core/vtkObject.h",
+  "modified_file": "Common/Core/vtkObject.h",
   "rbe_service": "kernite.cluster.engflow.com:443",
-  "rbe_mode": "remote"
+  "RBE_exec_strategy": "remote"
 }

@@ -23,10 +23,10 @@ class BenchmarkConfig:
     iterations: int
     toolchains: list
     output_dir: Path
-    touch_file: str
+    modified_file: str
     rbe_service: str
     jobs: int
-    rbe_mode: str
+    RBE_exec_strategy: str
 
 
 @dataclass
@@ -76,11 +76,11 @@ def pull_docker_image(image):
 class DockerContainer:
     """Context manager for a docker container lifecycle."""
 
-    def __init__(self, image, source_dir, log_dir, rbe_service, rbe_mode):
+    def __init__(self, image, source_dir, log_dir, rbe_service, RBE_exec_strategy):
         self.image = image
         self.source_dir = source_dir
         self.rbe_service = rbe_service
-        self.rbe_mode = rbe_mode
+        self.RBE_exec_strategy = RBE_exec_strategy
         self.name = str(uuid.uuid4())
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +95,7 @@ class DockerContainer:
         print(f"Starting container {self.name}...")
 
         rbe_env = []
-        if self.rbe_mode == "racing":
+        if self.RBE_exec_strategy == "racing":
             rbe_env = [
                 "-e", "RBE_local_resource_fraction=0.3",
                 "-e", "RBE_exec_strategy=racing",
@@ -117,6 +117,7 @@ class DockerContainer:
             "-e", f"RBE_service={self.rbe_service}",
             "-e", f"RBE_tls_client_auth_key={home}/engflow-mTLS/engflow.key",
             "-e", f"RBE_tls_client_auth_cert={home}/engflow-mTLS/engflow.crt",
+            "-e", f"RBE_proxy_log_dir=/tmp",
             "-v", f"{home}:{home}:rw",
             "-v", f"{self.source_dir}:{self.source_dir}:rw",
             "-w", str(self.source_dir),
@@ -197,10 +198,10 @@ def clean_test_repo(source_dir):
     subprocess.run(["git", "clean", "-fd"], cwd=str(source_dir), check=True)
 
 
-def modify_file_to_trigger_incremental_build(container, touch_file):
+def modify_file_to_trigger_incremental_build(container, modified_file):
     """Inject a unique #define into a header to trigger a cascade rebuild."""
     touch_uuid = str(uuid.uuid4())
-    container.run(f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" "{touch_file}"')
+    container.run(f'sed -i "1i #define TIPI \\"{touch_uuid}\\"" "{modified_file}"')
 
 
 def run_benchmarks(cfg, tool_name, run_steps):
@@ -216,7 +217,7 @@ def run_benchmarks(cfg, tool_name, run_steps):
             clean_test_repo(cfg.source_dir)
 
             log_dir = cfg.output_dir / "logs" / tool_name / tc_name / f"iter_{i}"
-            with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.rbe_mode) as container:
+            with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.RBE_exec_strategy) as container:
                 result = BenchmarkResult(tool=tool_name, toolchain=tc_name, description=description, iteration=i)
                 run_steps(container, result, toolchain_path, cfg)
                 results.append(asdict(result))
@@ -236,8 +237,8 @@ def cmake_steps(container, result, toolchain, cfg):
     container.run("tipi run cmake --build ./build --target clean", step="clean")
     result.record("rebuild", container.run("tipi run cmake --build ./build", step="rebuild"))
 
-    modify_file_to_trigger_incremental_build(container, cfg.touch_file)
-    result.record("touch_rebuild", container.run("tipi run cmake --build ./build", step="touch_rebuild"))
+    modify_file_to_trigger_incremental_build(container, cfg.modified_file)
+    result.record("modified_file_rebuild", container.run("tipi run cmake --build ./build", step="modified_file_rebuild"))
 
 
 def cmake_re_steps(container, result, toolchain, cfg):
@@ -248,11 +249,11 @@ def cmake_re_steps(container, result, toolchain, cfg):
     result.record("build_no_cache", container.run(build_cmd, step="build_no_cache"))
 
     # Clean build artifacts, keep RBE cache warm
-    container.run("cmake-re --build ./build --target clean --host", step="clean")
+    container.run("cmake-re --build ./build --target clean --host --distributed", step="clean")
     result.record("build_with_cache", container.run(build_cmd, step="build_with_cache"))
 
-    modify_file_to_trigger_incremental_build(container, cfg.touch_file)
-    result.record("touch_rebuild", container.run(build_cmd, step="touch_rebuild"))
+    modify_file_to_trigger_incremental_build(container, cfg.modified_file)
+    result.record("modified_file_rebuild", container.run(build_cmd, step="modified_file_rebuild"))
 
     zip_tmp_excluding_repo(container, cfg.source_dir, container.log_dir)
 
@@ -273,9 +274,9 @@ Expected JSON config format:
   "iterations":  "<number of benchmark iterations per toolchain (default: 1)>",
   "jobs":        "<number of parallel jobs for cmake-re builds (default: 1500)>",
   "output_dir":  "<directory for logs and results (default: output)>",
-  "touch_file":  "<header file to modify for incremental rebuild test, relative to repo root>",
+  "modified_file":  "<header file to modify for incremental rebuild test, relative to repo root>",
   "rbe_service": "<RBE endpoint host:port (default: kernite.cluster.engflow.com:443)>",
-  "rbe_mode":    "<RBE execution mode: 'remote' or 'racing' (required)>"
+  "RBE_exec_strategy":    "<RBE execution mode: 'remote' or 'racing' (required)>"
 }"""
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -292,7 +293,7 @@ Expected JSON config format:
     except FileNotFoundError:
         parser.error(f"config file not found: {args.config}")
 
-    required_keys = ["repo_url", "branch", "image", "toolchains", "touch_file", "rbe_mode"]
+    required_keys = ["repo_url", "branch", "image", "toolchains", "modified_file", "RBE_exec_strategy"]
     missing = [k for k in required_keys if k not in config]
     if missing:
         parser.error(f"missing required config keys: {', '.join(missing)}")
@@ -317,10 +318,10 @@ Expected JSON config format:
         iterations=config.get("iterations", 1),
         toolchains=[(tc["path"], tc["description"]) for tc in config["toolchains"]],
         output_dir=output_dir,
-        touch_file=config["touch_file"],
+        modified_file=config["modified_file"],
         rbe_service=config.get("rbe_service", "kernite.cluster.engflow.com:443"),
         jobs=config.get("jobs", 1500),
-        rbe_mode=config["rbe_mode"],
+        RBE_exec_strategy=config["RBE_exec_strategy"],
     )
 
     all_results = []
