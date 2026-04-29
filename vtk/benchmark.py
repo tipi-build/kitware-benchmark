@@ -172,6 +172,24 @@ class DockerContainer:
         return elapsed
 
 
+def zip_tmp_excluding_repo(container, source_dir, log_dir):
+    """Zip /tmp inside the container excluding the source repo folder, then copy it to the host log dir."""
+    zip_path_in_container = "/tmp/tmp_snapshot.zip"
+
+    subprocess.run(
+        ["docker", "exec", "-u", "0", container.name, "bash", "-c", "apt update && apt -y install zip"],
+        check=True,
+    )
+    container.run(
+        f'zip -r {zip_path_in_container} /tmp -x "{source_dir}/*" "{source_dir}" "{zip_path_in_container}"',
+        step="zip_tmp",
+    )
+
+    host_zip_path = Path(log_dir) / "tmp_snapshot.zip"
+    subprocess.run(["docker", "cp", f"{container.name}:{zip_path_in_container}", str(host_zip_path)], check=True)
+    print(f"  Saved tmp snapshot to {host_zip_path}")
+
+
 def clean_test_repo(source_dir):
     """Reset the source tree to a clean state, undoing any modifications and untracked files."""
     print("  Cleaning test repo...")
@@ -235,6 +253,8 @@ def cmake_re_steps(container, result, toolchain, cfg):
 
     modify_file_to_trigger_incremental_build(container, cfg.touch_file)
     result.record("touch_rebuild", container.run(build_cmd, step="touch_rebuild"))
+
+    zip_tmp_excluding_repo(container, cfg.source_dir, container.log_dir)
 
 
 def main():
