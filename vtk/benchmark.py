@@ -114,7 +114,6 @@ class DockerContainer:
             "-e", "TIPI_CACHE_CONSUME_ONLY=ON",
             "-e", "TIPI_CACHE_FORCE_ENABLE=OFF",
             *rbe_env,
-            "-e", f"RBE_platform=linux-amd64",
             "-e", f"RBE_service={self.rbe_service}",
             "-e", f"RBE_tls_client_auth_key={home}/engflow-mTLS/engflow.key",
             "-e", f"RBE_tls_client_auth_cert={home}/engflow-mTLS/engflow.crt",
