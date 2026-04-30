@@ -281,12 +281,12 @@ def cmake_re_steps(container, result, toolchain, cfg):
     result.record("configure", container.run(f'cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure"))
     result.record("build", container.run(f'RBE_invocation_id={build_invocation_id} {build_cmd}', step="build"))
 
+    modify_file_to_trigger_incremental_build(container, cfg.modified_file)
+    result.record("modified_file_rebuild", container.run(f'RBE_invocation_id={modified_rebuild_invocation_id} {build_cmd}', step="modified_file_rebuild"))
+    
     # Clean build artifacts, keep RBE cache warm
     container.run("cmake-re --build ./build --target clean --host --distributed", step="clean")
     result.record("rebuild", container.run(f'RBE_invocation_id={rebuild_invocation_id} {build_cmd}', step="rebuild"))
-
-    modify_file_to_trigger_incremental_build(container, cfg.modified_file)
-    result.record("modified_file_rebuild", container.run(f'RBE_invocation_id={modified_rebuild_invocation_id} {build_cmd}', step="modified_file_rebuild"))
 
     print(f"  RBE invocation IDs — build: {build_invocation_id}, rebuild: {rebuild_invocation_id}, modified_file_rebuild: {modified_rebuild_invocation_id}")
 
