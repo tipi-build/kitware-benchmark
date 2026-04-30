@@ -159,10 +159,15 @@ class DockerContainer:
                 ["docker", "exec", self.name, "bash", "-c", cmd],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
-            for line in proc.stdout:
-                sys.stdout.write(line)
-                f.write(line)
-            proc.wait()
+            try:
+                for line in proc.stdout:
+                    sys.stdout.write(line)
+                    f.write(line)
+                proc.wait()
+            except Exception:
+                proc.kill()
+                proc.wait()
+                raise
             if proc.returncode != 0:
                 f.write(f"\n[EXIT CODE: {proc.returncode}]\n")
         elapsed = time.perf_counter() - start
@@ -178,7 +183,7 @@ def zip_tmp_excluding_repo(container, source_dir, log_dir):
     zip_path_in_container = "/tmp/tmp_snapshot.zip"
 
     subprocess.run(
-        ["docker", "exec", "-u", "0", container.name, "bash", "-c", "apt update && apt -y install zip"],
+        ["docker", "exec", "-u", "0", container.name, "bash", "-c", "which zip || (apt update && apt -y install zip)"],
         check=True,
     )
     container.run(
@@ -260,10 +265,12 @@ def cmake_re_steps(container, result, toolchain, cfg):
 
 def write_results_csv(results, csv_path):
     """Write benchmark results list to a CSV file."""
+    seen = set()
     timing_keys = []
     for r in results:
         for k in r["timings"]:
-            if k not in timing_keys:
+            if k not in seen:
+                seen.add(k)
                 timing_keys.append(k)
 
     fieldnames = ["tool", "toolchain", "description", "iteration"] + timing_keys
