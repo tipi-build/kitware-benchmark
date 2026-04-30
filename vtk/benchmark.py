@@ -28,6 +28,8 @@ class BenchmarkConfig:
     rbe_service: str
     jobs: int
     RBE_exec_strategy: str
+    download_engflow_profiles: bool
+    profile_error_patterns: list
 
 
 @dataclass
@@ -196,6 +198,28 @@ def zip_tmp_excluding_repo(container, source_dir, log_dir):
     print(f"  Saved tmp snapshot to {host_zip_path}")
 
 
+def download_engflow_profiles(log_dir, invocations, rbe_service):
+    """Download EngFlow profiling JSON for each invocation into a dedicated folder."""
+    home = os.environ["HOME"]
+    rbe_host = rbe_service.rsplit(":", 1)[0]
+    profile_dir = Path(log_dir) / "engflow_profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    for step_name, invocation_id in invocations.items():
+        profile_path = profile_dir / f"{step_name}.json"
+        curl_cmd = [
+            "curl", "--fail",
+            "--cert", f"{home}/engflow-mTLS/engflow.crt",
+            "--key", f"{home}/engflow-mTLS/engflow.key",
+            "-H", "Accept: application/json",
+            "-o", str(profile_path),
+            f"https://{rbe_host}/api/profiling/v1/instances/default/invocations/{invocation_id}",
+        ]
+        print(f"  Downloading EngFlow profile for {step_name} ({invocation_id})...")
+        subprocess.run(curl_cmd, check=True)
+        print(f"  Saved to {profile_path}")
+
+
 def clean_test_repo(source_dir):
     """Reset the source tree to a clean state, undoing any modifications and untracked files."""
     print("  Cleaning test repo...")
@@ -248,19 +272,54 @@ def cmake_steps(container, result, toolchain, cfg):
 
 def cmake_re_steps(container, result, toolchain, cfg):
     silo_key = str(uuid.uuid4())
+    build_invocation_id = str(uuid.uuid4())
+    rebuild_invocation_id = str(uuid.uuid4())
+    modified_rebuild_invocation_id = str(uuid.uuid4())
+
     build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{cfg.jobs}'
 
     result.record("configure", container.run(f'cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure"))
-    result.record("build", container.run(build_cmd, step="build"))
+    result.record("build", container.run(f'RBE_invocation_id={build_invocation_id} {build_cmd}', step="build"))
 
     # Clean build artifacts, keep RBE cache warm
     container.run("cmake-re --build ./build --target clean --host --distributed", step="clean")
-    result.record("rebuild", container.run(build_cmd, step="rebuild"))
+    result.record("rebuild", container.run(f'RBE_invocation_id={rebuild_invocation_id} {build_cmd}', step="rebuild"))
 
     modify_file_to_trigger_incremental_build(container, cfg.modified_file)
-    result.record("modified_file_rebuild", container.run(build_cmd, step="modified_file_rebuild"))
+    result.record("modified_file_rebuild", container.run(f'RBE_invocation_id={modified_rebuild_invocation_id} {build_cmd}', step="modified_file_rebuild"))
+
+    print(f"  RBE invocation IDs — build: {build_invocation_id}, rebuild: {rebuild_invocation_id}, modified_file_rebuild: {modified_rebuild_invocation_id}")
 
     zip_tmp_excluding_repo(container, cfg.source_dir, container.log_dir)
+
+    if cfg.download_engflow_profiles:
+        # Wait for EngFlow profiling data to be available
+        print("  Waiting 60s for profiling data to be ready...")
+        time.sleep(60)
+
+        download_engflow_profiles(container.log_dir, {
+            "build": build_invocation_id,
+            "rebuild": rebuild_invocation_id,
+            "modified_file_rebuild": modified_rebuild_invocation_id,
+        }, cfg.rbe_service)
+
+
+def scan_engflow_profiles(output_dir, error_strings):
+    """Scan EngFlow profile files for known error patterns."""
+    profile_files = list(output_dir.rglob("engflow_profile/*.json")) + list(output_dir.rglob("engflow_profile/*.txt"))
+    if not profile_files:
+        return
+
+    print(f"\nScanning {len(profile_files)} EngFlow profile(s) for connection errors...")
+    found_any = False
+    for pf in profile_files:
+        content = pf.read_text()
+        for err in error_strings:
+            if err in content:
+                print(f"  WARNING: \"{err}\" found in {pf}")
+                found_any = True
+    if not found_any:
+        print("  No connection errors found in profiles.")
 
 
 def write_results_csv(results, csv_path):
@@ -304,7 +363,9 @@ Expected JSON config format:
   "output_dir":  "<directory for logs and results (default: output)>",
   "modified_file":  "<header file to modify for incremental rebuild test, relative to repo root>",
   "rbe_service": "<RBE endpoint host:port (default: kernite.cluster.engflow.com:443)>",
-  "RBE_exec_strategy":    "<RBE execution mode: 'remote' or 'racing' (required)>"
+  "RBE_exec_strategy":    "<RBE execution mode: 'remote' or 'racing' (required)>",
+  "download_engflow_profiles": "<bool: download EngFlow profiling data after each cmake-re iteration (default: false)>",
+  "profile_error_patterns":    "<list of strings to search for in downloaded profiles (default: [])>"
 }"""
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -350,6 +411,8 @@ Expected JSON config format:
         rbe_service=config.get("rbe_service", "kernite.cluster.engflow.com:443"),
         jobs=config.get("jobs", 1500),
         RBE_exec_strategy=config["RBE_exec_strategy"],
+        download_engflow_profiles=config.get("download_engflow_profiles", False),
+        profile_error_patterns=config.get("profile_error_patterns", []),
     )
 
     all_results = []
@@ -369,6 +432,9 @@ Expected JSON config format:
     hours, minutes = divmod(minutes, 60)
     print(f"\nAll results written to {results_file}")
     print(f"Total benchmark time: {hours}h{minutes:02d}m{seconds:02d}s")
+
+    if cfg.download_engflow_profiles and cfg.profile_error_patterns:
+        scan_engflow_profiles(output_dir, cfg.profile_error_patterns)
 
 
 if __name__ == "__main__":

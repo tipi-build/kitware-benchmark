@@ -13,5 +13,10 @@
   "output_dir": "output",
   "modified_file": "Common/Core/vtkObject.h",
   "rbe_service": "kernite.cluster.engflow.com:443",
-  "RBE_exec_strategy": "remote"
+  "RBE_exec_strategy": "remote",
+  "download_engflow_profiles": true,
+  "profile_error_patterns": [
+    "Keepalive failed. The connection is likely gone",
+    "Channel shutdown invoked"
+  ]
 }
