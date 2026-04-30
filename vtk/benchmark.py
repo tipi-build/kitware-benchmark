@@ -183,22 +183,19 @@ class DockerContainer:
         return elapsed
 
 
-def zip_tmp_excluding_repo(container, source_dir, log_dir):
-    """Zip /tmp inside the container excluding the source repo folder, then copy it to the host log dir."""
-    zip_path_in_container = "/tmp/tmp_snapshot.zip"
+def archive_container_data_excluding_repo(container, source_dir, log_dir):
+    """Tar /tmp inside the container excluding the source repo folder, then copy it to the host log dir."""
+    archive_path_in_container = "/tmp/tmp_snapshot.tar"
 
-    subprocess.run(
-        ["docker", "exec", "-u", "0", container.name, "bash", "-c", "which zip || (apt update && apt -y install zip)"],
-        check=True,
-    )
+
     container.run(
-        f'zip -r {zip_path_in_container} /tmp -x "{source_dir}/*" "{source_dir}" "{zip_path_in_container}"',
-        step="zip_tmp",
+        f'tar -cf {archive_path_in_container} --exclude="{source_dir}/*" -C /tmp .',
+        step="archive_container_data",
     )
 
-    host_zip_path = Path(log_dir) / "tmp_snapshot.zip"
-    subprocess.run(["docker", "cp", f"{container.name}:{zip_path_in_container}", str(host_zip_path)], check=True)
-    print(f"  Saved tmp snapshot to {host_zip_path}")
+    host_archive_path = Path(log_dir) / "tmp_snapshot.tar"
+    subprocess.run(["docker", "cp", f"{container.name}:{archive_path_in_container}", str(host_archive_path)], check=True)
+    print(f"  Saved tmp snapshot to {host_archive_path}")
 
 
 def download_engflow_profiles(log_dir, invocations, rbe_service, mtls_dir):
@@ -293,7 +290,7 @@ def cmake_re_steps(container, result, toolchain, cfg):
 
     print(f"  RBE invocation IDs — build: {build_invocation_id}, rebuild: {rebuild_invocation_id}, modified_file_rebuild: {modified_rebuild_invocation_id}")
 
-    zip_tmp_excluding_repo(container, cfg.source_dir, container.log_dir)
+    archive_container_data_excluding_repo(container, cfg.source_dir, container.log_dir)
 
     if cfg.download_engflow_profiles:
         cfg.pending_profile_downloads.append({
