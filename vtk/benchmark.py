@@ -293,8 +293,8 @@ def cmake_re_steps(container, result, toolchain, cfg):
     zip_tmp_excluding_repo(container, cfg.source_dir, container.log_dir)
 
     if cfg.download_engflow_profiles:
-        # Wait for EngFlow profiling data to be available
-        print("  Waiting 60s for profiling data to be ready...")
+        # EngFlow needs time to finalize profiling data after the build completes
+        print("  Waiting 60s for EngFlow to finalize profiling data before downloading...")
         time.sleep(60)
 
         download_engflow_profiles(container.log_dir, {
