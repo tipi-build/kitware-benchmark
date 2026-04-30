@@ -13,7 +13,9 @@ import tempfile
 import time
 import uuid
 import resource
+import time
 from dataclasses import dataclass, field, asdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -270,11 +272,41 @@ def cmake_steps(container, result, toolchain, cfg):
     result.record("modified_file_rebuild", container.run("tipi run cmake --build ./build", step="modified_file_rebuild"))
 
 
+def cmake_re_preheat(toolchain, cfg):
+    
+    start = time.perf_counter()
+    
+    tc_name = Path(toolchain).stem
+    log_dir = cfg.output_dir / "logs" / "cmake-re" / tc_name / "preheat"
+    
+    
+    def single_preheat_run(task_ix):
+        silo_key = str(uuid.uuid4())
+        with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.RBE_exec_strategy, cfg.mtls_dir) as container:
+            time.sleep(task_ix * 10) // staggered start to allow for ramp up
+            
+            print(f" - preheat task {task_ix} start")
+            container.run(f'cmake-re -GNinja -S . -B ./build_preheat_{task_ix} -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure")
+            container.run(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build_preheat_{task_ix} --host --distributed -j{cfg.jobs}', step="build")
+            print(f" - preheat task {task_ix} done")
+            
+                
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        indices = range(4)
+        print(f"Running preheat tasks on the threadpool: {indices}")
+        result = list(executor.map(single_preheat_run, indices))
+    
+    elapsed = time.perf_counter() - start
+    print(f"All preheat tasks completed in {elapsed}")
+    return elapsed
+
 def cmake_re_steps(container, result, toolchain, cfg):
     silo_key = str(uuid.uuid4())
     build_invocation_id = str(uuid.uuid4())
     rebuild_invocation_id = str(uuid.uuid4())
     modified_rebuild_invocation_id = str(uuid.uuid4())
+    
+    result.record("preheat_cluster", cmake_re_preheat(toolchain, cfg))
 
     build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{cfg.jobs}'
 
