@@ -251,11 +251,11 @@ def cmake_re_steps(container, result, toolchain, cfg):
     build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{cfg.jobs}'
 
     result.record("configure", container.run(f'cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure"))
-    result.record("build_no_cache", container.run(build_cmd, step="build_no_cache"))
+    result.record("build", container.run(build_cmd, step="build"))
 
     # Clean build artifacts, keep RBE cache warm
     container.run("cmake-re --build ./build --target clean --host --distributed", step="clean")
-    result.record("build_with_cache", container.run(build_cmd, step="build_with_cache"))
+    result.record("rebuild", container.run(build_cmd, step="rebuild"))
 
     modify_file_to_trigger_incremental_build(container, cfg.modified_file)
     result.record("modified_file_rebuild", container.run(build_cmd, step="modified_file_rebuild"))
