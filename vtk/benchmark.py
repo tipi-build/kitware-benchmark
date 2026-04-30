@@ -28,6 +28,7 @@ class BenchmarkConfig:
     rbe_service: str
     jobs: int
     RBE_exec_strategy: str
+    mtls_dir: str
     download_engflow_profiles: bool
     profile_error_patterns: list
     pending_profile_downloads: list = field(default_factory=list)
@@ -80,11 +81,12 @@ def pull_docker_image(image):
 class DockerContainer:
     """Context manager for a docker container lifecycle."""
 
-    def __init__(self, image, source_dir, log_dir, rbe_service, RBE_exec_strategy):
+    def __init__(self, image, source_dir, log_dir, rbe_service, RBE_exec_strategy, mtls_dir):
         self.image = image
         self.source_dir = source_dir
         self.rbe_service = rbe_service
         self.RBE_exec_strategy = RBE_exec_strategy
+        self.mtls_dir = mtls_dir
         self.name = str(uuid.uuid4())
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -118,8 +120,8 @@ class DockerContainer:
             "-e", "TIPI_CACHE_FORCE_ENABLE=OFF",
             *rbe_env,
             "-e", f"RBE_service={self.rbe_service}",
-            "-e", f"RBE_tls_client_auth_key={home}/engflow-mTLS/engflow.key",
-            "-e", f"RBE_tls_client_auth_cert={home}/engflow-mTLS/engflow.crt",
+            "-e", f"RBE_tls_client_auth_key={home}/{self.mtls_dir}/engflow.key",
+            "-e", f"RBE_tls_client_auth_cert={home}/{self.mtls_dir}/engflow.crt",
             "-e", f"RBE_proxy_log_dir=/tmp",
             "-v", f"{home}:{home}:rw",
             "-v", f"{self.source_dir}:{self.source_dir}:rw",
@@ -199,7 +201,7 @@ def zip_tmp_excluding_repo(container, source_dir, log_dir):
     print(f"  Saved tmp snapshot to {host_zip_path}")
 
 
-def download_engflow_profiles(log_dir, invocations, rbe_service):
+def download_engflow_profiles(log_dir, invocations, rbe_service, mtls_dir):
     """Download EngFlow profiling JSON for each invocation into a dedicated folder."""
     home = os.environ["HOME"]
     rbe_host = rbe_service.rsplit(":", 1)[0]
@@ -210,8 +212,8 @@ def download_engflow_profiles(log_dir, invocations, rbe_service):
         profile_path = profile_dir / f"{step_name}.json"
         curl_cmd = [
             "curl", "--fail",
-            "--cert", f"{home}/engflow-mTLS/engflow.crt",
-            "--key", f"{home}/engflow-mTLS/engflow.key",
+            "--cert", f"{home}/{mtls_dir}/engflow.crt",
+            "--key", f"{home}/{mtls_dir}/engflow.key",
             "-H", "Accept: application/json",
             "-o", str(profile_path),
             f"https://{rbe_host}/api/profiling/v1/instances/default/invocations/{invocation_id}",
@@ -247,7 +249,7 @@ def run_benchmarks(cfg, tool_name, run_steps):
             clean_test_repo(cfg.source_dir)
 
             log_dir = cfg.output_dir / "logs" / tool_name / tc_name / f"iter_{i}"
-            with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.RBE_exec_strategy) as container:
+            with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.RBE_exec_strategy, cfg.mtls_dir) as container:
                 result = BenchmarkResult(tool=tool_name, toolchain=tc_name, description=description, iteration=i)
                 run_steps(container, result, toolchain_path, cfg)
                 results.append(asdict(result))
@@ -365,6 +367,7 @@ Expected JSON config format:
   "modified_file":  "<header file to modify for incremental rebuild test, relative to repo root>",
   "rbe_service": "<RBE endpoint host:port (default: kernite.cluster.engflow.com:443)>",
   "RBE_exec_strategy":    "<RBE execution mode: 'remote' or 'racing' (required)>",
+  "mtls_dir":             "<mTLS certificate directory name under $HOME (default: engflow-mTLS)>",
   "download_engflow_profiles": "<bool: download EngFlow profiling data after each cmake-re iteration (default: false)>",
   "profile_error_patterns":    "<list of strings to search for in downloaded profiles (default: [])>"
 }"""
@@ -412,6 +415,7 @@ Expected JSON config format:
         rbe_service=config.get("rbe_service", "kernite.cluster.engflow.com:443"),
         jobs=config.get("jobs", 1500),
         RBE_exec_strategy=config["RBE_exec_strategy"],
+        mtls_dir=config.get("mtls_dir", "engflow-mTLS"),
         download_engflow_profiles=config.get("download_engflow_profiles", False),
         profile_error_patterns=config.get("profile_error_patterns", []),
     )
@@ -440,7 +444,7 @@ Expected JSON config format:
         time.sleep(120)
 
         for dl in cfg.pending_profile_downloads:
-            download_engflow_profiles(dl["log_dir"], dl["invocations"], cfg.rbe_service)
+            download_engflow_profiles(dl["log_dir"], dl["invocations"], cfg.rbe_service, cfg.mtls_dir)
 
         if cfg.profile_error_patterns:
             scan_engflow_profiles(output_dir, cfg.profile_error_patterns)
