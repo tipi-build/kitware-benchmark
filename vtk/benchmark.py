@@ -30,6 +30,7 @@ class BenchmarkConfig:
     RBE_exec_strategy: str
     download_engflow_profiles: bool
     profile_error_patterns: list
+    pending_profile_downloads: list = field(default_factory=list)
 
 
 @dataclass
@@ -293,15 +294,15 @@ def cmake_re_steps(container, result, toolchain, cfg):
     zip_tmp_excluding_repo(container, cfg.source_dir, container.log_dir)
 
     if cfg.download_engflow_profiles:
-        # EngFlow needs time to finalize profiling data after the build completes
-        print("  Waiting 60s for EngFlow to finalize profiling data before downloading...")
-        time.sleep(60)
-
-        download_engflow_profiles(container.log_dir, {
-            "build": build_invocation_id,
-            "rebuild": rebuild_invocation_id,
-            "modified_file_rebuild": modified_rebuild_invocation_id,
-        }, cfg.rbe_service)
+        cfg.pending_profile_downloads.append({
+            "log_dir": container.log_dir,
+            "invocations": {
+                "build": build_invocation_id,
+                "rebuild": rebuild_invocation_id,
+                "modified_file_rebuild": modified_rebuild_invocation_id,
+            },
+        })
+        print(f"  Queued EngFlow profile download ({len(cfg.pending_profile_downloads)} pending)")
 
 
 def scan_engflow_profiles(output_dir, error_strings):
@@ -433,8 +434,16 @@ Expected JSON config format:
     print(f"\nAll results written to {results_file}")
     print(f"Total benchmark time: {hours}h{minutes:02d}m{seconds:02d}s")
 
-    if cfg.download_engflow_profiles and cfg.profile_error_patterns:
-        scan_engflow_profiles(output_dir, cfg.profile_error_patterns)
+    if cfg.download_engflow_profiles and cfg.pending_profile_downloads:
+        # EngFlow needs time to finalize profiling data after builds complete
+        print(f"\nWaiting 60s for EngFlow to finalize profiling data before downloading {len(cfg.pending_profile_downloads)} profile(s)...")
+        time.sleep(120)
+
+        for dl in cfg.pending_profile_downloads:
+            download_engflow_profiles(dl["log_dir"], dl["invocations"], cfg.rbe_service)
+
+        if cfg.profile_error_patterns:
+            scan_engflow_profiles(output_dir, cfg.profile_error_patterns)
 
 
 if __name__ == "__main__":
