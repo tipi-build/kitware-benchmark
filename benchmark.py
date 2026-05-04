@@ -33,6 +33,9 @@ class BenchmarkConfig:
     mtls_dir: str
     download_engflow_profiles: bool
     profile_error_patterns: list
+    cmake_args: list = field(default_factory=list)
+    docker_env: list = field(default_factory=list)
+    preheat_targets: list = field(default_factory=list)
     pending_profile_downloads: list = field(default_factory=list)
 
 
@@ -83,12 +86,13 @@ def pull_docker_image(image):
 class DockerContainer:
     """Context manager for a docker container lifecycle."""
 
-    def __init__(self, image, source_dir, log_dir, rbe_service, RBE_exec_strategy, mtls_dir):
+    def __init__(self, image, source_dir, log_dir, rbe_service, RBE_exec_strategy, mtls_dir, docker_env=None):
         self.image = image
         self.source_dir = source_dir
         self.rbe_service = rbe_service
         self.RBE_exec_strategy = RBE_exec_strategy
         self.mtls_dir = mtls_dir
+        self.docker_env = docker_env or []
         self.name = str(uuid.uuid4())
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -121,6 +125,7 @@ class DockerContainer:
             "-e", "TIPI_CACHE_CONSUME_ONLY=ON",
             "-e", "TIPI_CACHE_FORCE_ENABLE=OFF",
             *rbe_env,
+            *[arg for var in self.docker_env for arg in ("-e", var)],
             "-e", f"RBE_service={self.rbe_service}",
             "-e", f"RBE_tls_client_auth_key={home}/{self.mtls_dir}/engflow.key",
             "-e", f"RBE_tls_client_auth_cert={home}/{self.mtls_dir}/engflow.crt",
@@ -248,7 +253,7 @@ def run_benchmarks(cfg, tool_name, run_steps):
             clean_test_repo(cfg.source_dir)
 
             log_dir = cfg.output_dir / "logs" / tool_name / tc_name / f"iter_{i}"
-            with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.RBE_exec_strategy, cfg.mtls_dir) as container:
+            with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.RBE_exec_strategy, cfg.mtls_dir, cfg.docker_env) as container:
                 result = BenchmarkResult(tool=tool_name, toolchain=tc_name, description=description, iteration=i)
                 run_steps(container, result, toolchain_path, cfg)
                 results.append(asdict(result))
@@ -261,7 +266,8 @@ def run_benchmarks(cfg, tool_name, run_steps):
 
 
 def cmake_steps(container, result, toolchain, cfg):
-    result.record("configure", container.run(f'tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}"', step="configure"))
+    extra_args = " ".join(cfg.cmake_args)
+    result.record("configure", container.run(f'tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args}'.rstrip(), step="configure"))
     result.record("build", container.run("tipi run cmake --build ./build", step="build"))
 
     # Clean then rebuild
@@ -282,12 +288,14 @@ def cmake_re_preheat(toolchain, cfg):
     
     def single_preheat_run(task_ix):
         silo_key = str(uuid.uuid4())
-        with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.RBE_exec_strategy, cfg.mtls_dir) as container:
+        with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.RBE_exec_strategy, cfg.mtls_dir, cfg.docker_env) as container:
             time.sleep(task_ix * 10) # staggered start to allow for ramp up
             
             print(f" - preheat task {task_ix} start")
-            container.run(f'cmake-re -GNinja -S . -B ./build_preheat_{task_ix} -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure")
-            container.run(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build_preheat_{task_ix} --target vtkCommonDataModel vtkRenderingCore --host --distributed -j{cfg.jobs}', step="build")
+            extra_args = " ".join(cfg.cmake_args)
+            container.run(f'cmake-re -GNinja -S . -B ./build_preheat_{task_ix} -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args} --host --distributed'.replace("  ", " "), step="configure")
+            target_flag = f' --target {" ".join(cfg.preheat_targets)}' if cfg.preheat_targets else ''
+            container.run(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build_preheat_{task_ix}{target_flag} --host --distributed -j{cfg.jobs}', step="build")
             print(f" - preheat task {task_ix} done")
             
                 
@@ -308,7 +316,8 @@ def cmake_re_steps(container, result, toolchain, cfg):
 
     build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{cfg.jobs}'
 
-    result.record("configure", container.run(f'cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure"))
+    extra_args = " ".join(cfg.cmake_args)
+    result.record("configure", container.run(f'cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args} --host --distributed'.replace("  ", " "), step="configure"))
     
     result.record("preheat_cluster", cmake_re_preheat(toolchain, cfg))
     
@@ -398,6 +407,9 @@ Expected JSON config format:
   "rbe_service": "<RBE endpoint host:port (default: kernite.cluster.engflow.com:443)>",
   "RBE_exec_strategy":    "<RBE execution mode: 'remote' or 'racing' (required)>",
   "mtls_dir":             "<mTLS certificate directory name under $HOME (default: engflow-mTLS)>",
+  "cmake_args":                "<list of extra CMake arguments for configure, e.g. [\"-DCMAKE_BUILD_TYPE=Release\"] (default: [])>",
+  "docker_env":                "<list of extra environment variables for docker run, e.g. [\"KEY=value\"] (default: [])>",
+  "preheat_targets":           "<list of CMake targets for preheat builds (default: [] = build all)>",
   "download_engflow_profiles": "<bool: download EngFlow profiling data after each cmake-re iteration (default: false)>",
   "profile_error_patterns":    "<list of strings to search for in downloaded profiles (default: [])>"
 }"""
@@ -448,6 +460,9 @@ Expected JSON config format:
         mtls_dir=config.get("mtls_dir", "engflow-mTLS"),
         download_engflow_profiles=config.get("download_engflow_profiles", False),
         profile_error_patterns=config.get("profile_error_patterns", []),
+        cmake_args=config.get("cmake_args", []),
+        docker_env=config.get("docker_env", []),
+        preheat_targets=config.get("preheat_targets", []),
     )
 
     all_results = []

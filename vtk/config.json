@@ -15,6 +15,7 @@
   "rbe_service": "kernite.cluster.engflow.com:443",
   "RBE_exec_strategy": "remote",
   "mtls_dir": "engflow-mTLS",
+  "preheat_targets": ["vtkRenderingCore"],
   "download_engflow_profiles": true,
   "profile_error_patterns": [
     "Keepalive failed. The connection is likely gone",
