@@ -49,6 +49,13 @@ This reference provided results have been produced by running the benchmark as d
   | **median** | **13.01** | **79.74** | **72.48** | **21.36** |                                   
   | **P90** | **13.081** | **89.841** | **78.592** | **21.64** |  
 
+
+  | Statistic | `cmake configure` | `cmake-re configure` | `cmake build` | `cmake-re build` | `cmake modified file rebuild` | `cmake-re modified file rebuild` | `cmake rebuild` | `cmake-re rebuild` |
+|---|---|---|---|---|---|---|---|---|
+| **average** | 9.793 | 13.021 | 119.399 | 79.824 | 114.994 | 69.826 | 119.59 | 21.316 |
+| **median** | 9.8 | 13.01 | 119.445 | 79.74 | 115.05 | 72.48 | 119.685 | 21.36 |
+| **P90** | 9.83 | 13.081 | 119.691 | 89.841 | 115.268 | 78.592 | 120.01 | 21.64 |
+
 ## To run this benchmark:
 
 An `engflow-mtls` folder (with all credentials inside) should be present in the machine's home directory
