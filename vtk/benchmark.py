@@ -287,8 +287,7 @@ def cmake_re_preheat(toolchain, cfg):
             
             print(f" - preheat task {task_ix} start")
             container.run(f'cmake-re -GNinja -S . -B ./build_preheat_{task_ix} -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure")
-            container.run(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build_preheat_{task_ix} --target vtkCommonDataModel vtkRenderingCore
- --host --distributed -j{cfg.jobs}', step="build")
+            container.run(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build_preheat_{task_ix} --target vtkCommonDataModel vtkRenderingCore --host --distributed -j{cfg.jobs}', step="build")
             print(f" - preheat task {task_ix} done")
             
                 
