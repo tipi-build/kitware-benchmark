@@ -140,10 +140,14 @@ class DockerContainer:
         ], check=True)
 
         try:
-            # Ensure cmake-re can create its session directory inside .tipi/vT.w
+            # Ensure cmake-re can create subdirs in .tipi (non-recursive) and .tipi/vT.w (recursive)
             subprocess.run([
                 "docker", "exec", "-u", "0", self.name,
-                "chmod", "-R", "777", "/usr/local/share/.tipi/vT.w",
+                "chmod", "a+rwx", "/usr/local/share/.tipi",
+            ], check=False)
+            subprocess.run([
+                "docker", "exec", "-u", "0", self.name,
+                "chmod", "-R", "a+rwX", "/usr/local/share/.tipi/vT.w",
             ], check=False)
 
 
