@@ -33,6 +33,7 @@ class BenchmarkConfig:
     mtls_dir: str
     download_engflow_profiles: bool
     profile_error_patterns: list
+    cmake_source_dir: str = "."
     cmake_args: list = field(default_factory=list)
     docker_env: list = field(default_factory=list)
     preheat_targets: list = field(default_factory=list)
@@ -267,7 +268,7 @@ def run_benchmarks(cfg, tool_name, run_steps):
 
 def cmake_steps(container, result, toolchain, cfg):
     extra_args = " ".join(cfg.cmake_args)
-    result.record("configure", container.run(f'tipi run cmake -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args}'.rstrip(), step="configure"))
+    result.record("configure", container.run(f'tipi run cmake -GNinja -S {cfg.cmake_source_dir} -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args}'.rstrip(), step="configure"))
     result.record("build", container.run("tipi run cmake --build ./build", step="build"))
 
     # Clean then rebuild
@@ -293,7 +294,7 @@ def cmake_re_preheat(toolchain, cfg):
             
             print(f" - preheat task {task_ix} start")
             extra_args = " ".join(cfg.cmake_args)
-            container.run(f'cmake-re -GNinja -S . -B ./build_preheat_{task_ix} -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args} --host --distributed'.replace("  ", " "), step="configure")
+            container.run(f'cmake-re -GNinja -S {cfg.cmake_source_dir} -B ./build_preheat_{task_ix} -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args} --host --distributed'.replace("  ", " "), step="configure")
             target_flag = f' --target {" ".join(cfg.preheat_targets)}' if cfg.preheat_targets else ''
             container.run(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build_preheat_{task_ix}{target_flag} --host --distributed -j{cfg.jobs}', step="build")
             print(f" - preheat task {task_ix} done")
@@ -317,7 +318,7 @@ def cmake_re_steps(container, result, toolchain, cfg):
     build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{cfg.jobs}'
 
     extra_args = " ".join(cfg.cmake_args)
-    result.record("configure", container.run(f'cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args} --host --distributed'.replace("  ", " "), step="configure"))
+    result.record("configure", container.run(f'cmake-re -GNinja -S {cfg.cmake_source_dir} -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args} --host --distributed'.replace("  ", " "), step="configure"))
     
     result.record("preheat_cluster", cmake_re_preheat(toolchain, cfg))
     
@@ -407,6 +408,7 @@ Expected JSON config format:
   "rbe_service": "<RBE endpoint host:port (default: kernite.cluster.engflow.com:443)>",
   "RBE_exec_strategy":    "<RBE execution mode: 'remote' or 'racing' (required)>",
   "mtls_dir":             "<mTLS certificate directory name under $HOME (default: engflow-mTLS)>",
+  "cmake_source_dir":           "<relative path to the CMake source directory within the repo (default: '.')>",
   "cmake_args":                "<list of extra CMake arguments for configure, e.g. [\"-DCMAKE_BUILD_TYPE=Release\"] (default: [])>",
   "docker_env":                "<list of extra environment variables for docker run, e.g. [\"KEY=value\"] (default: [])>",
   "preheat_targets":           "<list of CMake targets for preheat builds (default: [] = build all)>",
@@ -460,6 +462,7 @@ Expected JSON config format:
         mtls_dir=config.get("mtls_dir", "engflow-mTLS"),
         download_engflow_profiles=config.get("download_engflow_profiles", False),
         profile_error_patterns=config.get("profile_error_patterns", []),
+        cmake_source_dir=config.get("cmake_source_dir", "."),
         cmake_args=config.get("cmake_args", []),
         docker_env=config.get("docker_env", []),
         preheat_targets=config.get("preheat_targets", []),

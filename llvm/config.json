@@ -1,6 +1,7 @@
 {
   "repo_url": "https://github.com/tipi-build/llvm-project.git",
   "branch": "demo",
+  "cmake_source_dir": "./llvm",
   "image": "tipibuild/tipi-ubuntu-2404@sha256:4fe34765e961c8ab4e00d3d6f2423f6bb0dd5450a2f8bd03f61cabd886111403",
   "toolchains": [
     {
