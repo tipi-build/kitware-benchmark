@@ -283,7 +283,7 @@ def cmake_re_preheat(toolchain, cfg):
     def single_preheat_run(task_ix):
         silo_key = str(uuid.uuid4())
         with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.RBE_exec_strategy, cfg.mtls_dir) as container:
-            time.sleep(task_ix * 10) // staggered start to allow for ramp up
+            time.sleep(task_ix * 10) # staggered start to allow for ramp up
             
             print(f" - preheat task {task_ix} start")
             container.run(f'cmake-re -GNinja -S . -B ./build_preheat_{task_ix} -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure")
