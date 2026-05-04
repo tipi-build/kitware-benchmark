@@ -140,12 +140,20 @@ class DockerContainer:
         ], check=True)
 
         try:
+            # Ensure cmake-re can create its session directory inside .tipi/vT.w
+            subprocess.run([
+                "docker", "exec", "-u", "0", self.name,
+                "chmod", "-R", "777", "/usr/local/share/.tipi/vT.w",
+            ], check=False)
+
+
             # Create the user inside the container
             subprocess.run([
                 "docker", "exec", "-u", "0", self.name,
                 "useradd", "-d", home, "-u", str(uid), username,
             ], check=False)
 
+            
             print(f"Container running: {self.name}")
         except Exception:
             subprocess.run(["docker", "stop", "-t0", self.name], check=False)
