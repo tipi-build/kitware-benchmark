@@ -287,7 +287,8 @@ def cmake_re_preheat(toolchain, cfg):
             
             print(f" - preheat task {task_ix} start")
             container.run(f'cmake-re -GNinja -S . -B ./build_preheat_{task_ix} -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure")
-            container.run(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build_preheat_{task_ix} --host --distributed -j{cfg.jobs}', step="build")
+            container.run(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build_preheat_{task_ix} --target vtkCommonDataModel vtkRenderingCore
+ --host --distributed -j{cfg.jobs}', step="build")
             print(f" - preheat task {task_ix} done")
             
                 
@@ -305,12 +306,13 @@ def cmake_re_steps(container, result, toolchain, cfg):
     build_invocation_id = str(uuid.uuid4())
     rebuild_invocation_id = str(uuid.uuid4())
     modified_rebuild_invocation_id = str(uuid.uuid4())
-    
-    result.record("preheat_cluster", cmake_re_preheat(toolchain, cfg))
 
     build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{cfg.jobs}'
 
     result.record("configure", container.run(f'cmake-re -GNinja -S . -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" --host --distributed', step="configure"))
+    
+    result.record("preheat_cluster", cmake_re_preheat(toolchain, cfg))
+    
     result.record("build", container.run(f'RBE_invocation_id={build_invocation_id} {build_cmd}', step="build"))
 
     modify_file_to_trigger_incremental_build(container, cfg.modified_file)
