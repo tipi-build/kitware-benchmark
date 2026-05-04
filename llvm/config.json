@@ -5,7 +5,7 @@
   "image": "tipibuild/tipi-ubuntu-2404@sha256:4fe34765e961c8ab4e00d3d6f2423f6bb0dd5450a2f8bd03f61cabd886111403",
   "toolchains": [
     {
-      "path": "environments/linux-ubuntu-2404-cxx20.cmake",
+      "path": "/tmp/llvm/environments/linux-ubuntu-2404-cxx20.cmake",
       "description": "linux 2404 configuration"
     }
   ],
