@@ -24,7 +24,7 @@
   "cmake_args": [
     "-DLLVM_APPEND_VC_REV=OFF",
     "-DCLANG_ENABLE_ARCMT=OFF",
-    "-DLLVM_ENABLE_PROJECTS=clang;clang-tools-extra;clang-format",
+    "-DLLVM_ENABLE_PROJECTS='${LLVM_PROJECTS}'",
     "-DLLVM_DEFAULT_TARGET_TRIPLE=${TARGET_TRIPLE}",
     "-DLLVM_RUNTIME_TARGETS=${TARGET_TRIPLE}",
     "-DLLVM_TARGETS_TO_BUILD=${LLVM_ARCH}",
@@ -34,5 +34,5 @@
     "-DCMAKE_BUILD_TYPE=Release",
     "-DCLANG_ENABLE_STATIC_ANALYZER=Off"
   ],
-  "docker_env": ["LINUX_ARCH=x86", "LLVM_ARCH=X86", "TARGET_TRIPLE=x86_64-linux-gnu", "TARGET_TRIPLE_COMPAT=x86_64-linux-gnu"]
+  "docker_env": ["LINUX_ARCH=x86", "LLVM_ARCH=X86", "TARGET_TRIPLE=x86_64-linux-gnu", "TARGET_TRIPLE_COMPAT=x86_64-linux-gnu", "LLVM_PROJECTS=clang;clang-tools-extra;clang-format"]
 }
