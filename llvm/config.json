@@ -12,7 +12,7 @@
   "iterations": 1,
   "jobs": 1500,
   "output_dir": "output",
-  "modified_file": "clang/include/clang/Basic/SourceLocation.h",
+  "modified_file": "clang/include/clang/Basic/Diagnostic.h",
   "rbe_service": "kernite.cluster.engflow.com:443",
   "RBE_exec_strategy": "remote",
   "mtls_dir": "engflow-mTLS",
