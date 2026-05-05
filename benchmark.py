@@ -322,7 +322,11 @@ def cmake_re_steps(container, result, toolchain, cfg):
 
     extra_args = " ".join(cfg.cmake_args)
     result.record("configure", container.run(f'cmake-re -GNinja -S {cfg.cmake_source_dir} -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args} --host --distributed'.replace("  ", " "), step="configure"))
-    
+
+    # Build without silo key to populate shared remote cache, then clean
+    container.run(f'cmake-re --build ./build --host --distributed -j{cfg.jobs}', step="build_no_silo")
+    container.run("cmake-re --build ./build --target clean --host --distributed", step="clean_after_no_silo")
+
     result.record("preheat_cluster", cmake_re_preheat(toolchain, cfg))
     
     result.record("build", container.run(f'RBE_invocation_id={build_invocation_id} {build_cmd}', step="build"))
