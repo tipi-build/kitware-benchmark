@@ -270,12 +270,13 @@ def run_benchmarks(cfg, tool_name, run_steps):
 
 def cmake_steps(container, result, toolchain, cfg):
     extra_args = " ".join(cfg.cmake_args)
-    result.record("configure", container.run(f'tipi run cmake -GNinja -S {cfg.cmake_source_dir} -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args}'.rstrip(), step="configure"))
-    result.record("build", container.run("tipi run cmake --build ./build", step="build"))
+    path_setup = 'export PATH="$(dirname $(tipi run which cmake)):$(dirname $(tipi run which ninja)):$PATH"'
+    result.record("configure", container.run(f'{path_setup} && cmake -GNinja -S {cfg.cmake_source_dir} -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args}'.rstrip(), step="configure"))
+    result.record("build", container.run(f'{path_setup} && cmake --build ./build', step="build"))
 
     # Clean then rebuild
-    container.run("tipi run cmake --build ./build --target clean", step="clean")
-    result.record("rebuild", container.run("tipi run cmake --build ./build", step="rebuild"))
+    container.run(f'{path_setup} && cmake --build ./build --target clean', step="clean")
+    result.record("rebuild", container.run(f'{path_setup} && cmake --build ./build', step="rebuild"))
 
     modify_file_to_trigger_incremental_build(container, cfg.modified_file)
     result.record("modified_file_rebuild", container.run("tipi run cmake --build ./build", step="modified_file_rebuild"))
