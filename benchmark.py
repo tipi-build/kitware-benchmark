@@ -141,17 +141,6 @@ class DockerContainer:
         ], check=True)
 
         try:
-            # Ensure cmake-re can create subdirs in .tipi (non-recursive) and .tipi/vT.w (recursive)
-            subprocess.run([
-                "docker", "exec", "-u", "0", self.name,
-                "chmod", "a+rwx", "/usr/local/share/.tipi",
-            ], check=False)
-            subprocess.run([
-                "docker", "exec", "-u", "0", self.name,
-                "chmod", "-R", "a+rwX", "/usr/local/share/.tipi/vT.w",
-            ], check=False)
-
-
             # Create the user inside the container
             subprocess.run([
                 "docker", "exec", "-u", "0", self.name,
