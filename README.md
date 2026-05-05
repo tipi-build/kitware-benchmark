@@ -63,7 +63,7 @@ An `engflow-mtls` folder (with all credentials inside) should be present in the 
 Run the following commands:
 ```bash
 cd vtk/
-python3 ./benchmark.py config.json
+python3 ../benchmark.py config.json
 ```
 
 Wait and find the results in the `<output_dir>/benchmark-results.json`or in `<output_dir>/benchmark-results.csv`
