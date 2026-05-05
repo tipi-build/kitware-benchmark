@@ -34,6 +34,7 @@ class BenchmarkConfig:
     download_engflow_profiles: bool
     profile_error_patterns: list
     cmake_source_dir: str = "."
+    archive_container_data: bool = False
     cmake_args: list = field(default_factory=list)
     docker_env: list = field(default_factory=list)
     preheat_targets: list = field(default_factory=list)
@@ -279,7 +280,7 @@ def run_benchmarks(cfg, tool_name, run_steps):
 
 
 def cmake_steps(container, result, toolchain, cfg):
-    extra_args = " ".join(cfg.cmake_args)
+    extra_args = " ".join(f"'{a}'" if ';' in a else a for a in cfg.cmake_args)
     result.record("configure", container.run(f'tipi run cmake -GNinja -S {cfg.cmake_source_dir} -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args}'.rstrip(), step="configure"))
     result.record("build", container.run("tipi run cmake --build ./build", step="build"))
 
@@ -305,7 +306,7 @@ def cmake_re_preheat(toolchain, cfg):
             time.sleep(task_ix * 10) # staggered start to allow for ramp up
             
             print(f" - preheat task {task_ix} start")
-            extra_args = " ".join(cfg.cmake_args)
+            extra_args = " ".join(f"'{a}'" if ';' in a else a for a in cfg.cmake_args)
             container.run(f'cmake-re -GNinja -S {cfg.cmake_source_dir} -B ./build_preheat_{task_ix} -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args} --host --distributed'.replace("  ", " "), step="configure")
             target_flag = f' --target {" ".join(cfg.preheat_targets)}' if cfg.preheat_targets else ''
             container.run(f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build_preheat_{task_ix}{target_flag} --host --distributed -j{cfg.jobs}', step="build")
@@ -329,7 +330,7 @@ def cmake_re_steps(container, result, toolchain, cfg):
 
     build_cmd = f'RBE_platform="cache-silo-key={silo_key}" cmake-re --build ./build --host --distributed -j{cfg.jobs}'
 
-    extra_args = " ".join(cfg.cmake_args)
+    extra_args = " ".join(f"'{a}'" if ';' in a else a for a in cfg.cmake_args)
     result.record("configure", container.run(f'cmake-re -GNinja -S {cfg.cmake_source_dir} -B ./build -DCMAKE_TOOLCHAIN_FILE="{toolchain}" {extra_args} --host --distributed'.replace("  ", " "), step="configure"))
     
     result.record("preheat_cluster", cmake_re_preheat(toolchain, cfg))
@@ -345,7 +346,8 @@ def cmake_re_steps(container, result, toolchain, cfg):
 
     print(f"  RBE invocation IDs — build: {build_invocation_id}, rebuild: {rebuild_invocation_id}, modified_file_rebuild: {modified_rebuild_invocation_id}")
 
-    archive_container_data_excluding_repo(container, cfg.source_dir, container.log_dir)
+    if cfg.archive_container_data:
+        archive_container_data_excluding_repo(container, cfg.source_dir, container.log_dir)
 
     if cfg.download_engflow_profiles:
         cfg.pending_profile_downloads.append({
@@ -475,6 +477,7 @@ Expected JSON config format:
         download_engflow_profiles=config.get("download_engflow_profiles", False),
         profile_error_patterns=config.get("profile_error_patterns", []),
         cmake_source_dir=config.get("cmake_source_dir", "."),
+        archive_container_data=config.get("archive_container_data", False),
         cmake_args=config.get("cmake_args", []),
         docker_env=config.get("docker_env", []),
         preheat_targets=config.get("preheat_targets", []),

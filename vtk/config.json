@@ -16,6 +16,7 @@
   "RBE_exec_strategy": "remote",
   "mtls_dir": "engflow-mTLS",
   "preheat_targets": ["vtkRenderingCore"],
+  "archive_container_data": true,
   "download_engflow_profiles": true,
   "profile_error_patterns": [
     "Keepalive failed. The connection is likely gone",
