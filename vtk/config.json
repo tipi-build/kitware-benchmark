@@ -1,0 +1,23 @@
+{
+  "repo_url": "https://github.com/tipi-build/vtk.git",
+  "branch": "feature/benchmark-branch",
+  "image": "tipibuild/linux-kitware-paraview@sha256:e0417824c4d417eb4d363f08954d11b94f9e6eb4ec76cee391db72e1e281fb18",
+  "toolchains": [
+    {
+      "path": "toolchains/environments/linux-kitware-paraview-vtk-mini.cmake",
+      "description": "mini configuration"
+    }
+  ],
+  "iterations": 1,
+  "jobs": 1500,
+  "output_dir": "output",
+  "modified_file": "Common/Core/vtkObject.h",
+  "rbe_service": "kernite.cluster.engflow.com:443",
+  "RBE_exec_strategy": "remote",
+  "mtls_dir": "engflow-mTLS",
+  "download_engflow_profiles": true,
+  "profile_error_patterns": [
+    "Keepalive failed. The connection is likely gone",
+    "Channel shutdown invoked"
+  ]
+}
