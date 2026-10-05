@@ -19,6 +19,8 @@
   "bazel_args": [
     "--cxxopt=-std=c++17",
     "--host_cxxopt=-std=c++17",
-    "--verbose_failures"
+    "--verbose_failures",
+    "--remote_retries=5",
+    "--experimental_remote_cache_eviction_retries=5"
   ]
 }

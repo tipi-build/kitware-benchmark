@@ -44,6 +44,8 @@ class BenchmarkConfig:
     bazel_remote_instance: str = "default"
     bazel_args: list = field(default_factory=list)
     bazel_exec_properties: dict = field(default_factory=dict)
+    bazel_enable_bes: bool = True
+    bazel_bes_results_url: str = ""
     modified_sources_glob: str = "generated/srcs/*.cpp"
     modified_fraction: float = 0.15
     pending_profile_downloads: list = field(default_factory=list)
@@ -396,17 +398,29 @@ def write_bazel_remote_rc(container, cfg, rc_path, silo_key):
         f"build:remote --jobs={cfg.jobs}",
     ]
 
-    # EngFlow's docker-based runners select which runner/image to execute an action in from the
-    # platform exec properties. Without a runner-selecting property (e.g. container-image) the
-    # scheduler rejects actions with "No matching action runner found". The cache-silo-key alone
-    # is not enough — it only isolates the cache namespace. Each property is one default_exec_prop.
+    # EngFlow routes an action to the docker action runner via the `container-image` platform
+    # property; without it the scheduler rejects actions with "No matching action runner found"
+    # (cache-silo-key alone only isolates the cache namespace). Per EngFlow's platform-options
+    # reference the value must start with `docker://` and should include a digest. Machine-platform
+    # props like OSFamily are intentionally NOT defaulted here — OSFamily must be paired with ISA,
+    # so add both via bazel_exec_properties if your pool requires them.
     exec_props = {
         "container-image": f"docker://{cfg.image}",
-        "OSFamily": "Linux",
         **cfg.bazel_exec_properties,
         "cache-silo-key": silo_key,
     }
     lines += [f"build:remote --remote_default_exec_properties={k}={v}" for k, v in exec_props.items()]
+
+    # Build Event Protocol: stream build events to EngFlow's BES backend so each invocation gets a
+    # web UI (timeline, action details, logs). Reuses the same gRPC endpoint and mTLS credentials.
+    if cfg.bazel_enable_bes:
+        rbe_host = cfg.rbe_service.rsplit(":", 1)[0]
+        results_url = cfg.bazel_bes_results_url or f"https://{rbe_host}/invocation/"
+        lines += [
+            f"build:remote --bes_backend={endpoint}",
+            f"build:remote --bes_results_url={results_url}",
+        ]
+
     lines += [f"build:remote {arg}" for arg in cfg.bazel_args]
     heredoc = "\n".join(lines)
     container.run(f"cat > {rc_path} <<'BAZELRC'\n{heredoc}\nBAZELRC", step="write_bazelrc")
@@ -507,7 +521,9 @@ Expected JSON config format:
   "bazel_bin":                 "<bazel binary to invoke inside the container (default: 'bazel')>",
   "bazel_remote_instance":     "<RBE remote instance name for bazel (default: 'default')>",
   "bazel_args":                "<list of extra bazel build flags (default: [])>",
-  "bazel_exec_properties":     "<dict of RBE platform exec properties; merged over defaults container-image=docker://<image> and OSFamily=Linux (default: {})>",
+  "bazel_exec_properties":     "<dict of RBE platform exec properties, merged over default container-image=docker://<image> (default: {})>",
+  "bazel_enable_bes":          "<bool: stream the Build Event Protocol to the EngFlow BES backend for a build UI (default: true)>",
+  "bazel_bes_results_url":     "<base URL for BES invocation links; defaults to https://<rbe host>/invocation/>",
   "modified_sources_glob":     "<glob of TU sources to touch for the incremental rebuild (default: 'generated/srcs/*.cpp')>",
   "modified_fraction":         "<fraction (0-1) of matched sources to modify for the incremental rebuild (default: 0.15)>"
 }"""
@@ -578,6 +594,8 @@ Expected JSON config format:
         bazel_remote_instance=config.get("bazel_remote_instance", "default"),
         bazel_args=config.get("bazel_args", []),
         bazel_exec_properties=config.get("bazel_exec_properties", {}),
+        bazel_enable_bes=config.get("bazel_enable_bes", True),
+        bazel_bes_results_url=config.get("bazel_bes_results_url", ""),
         modified_sources_glob=config.get("modified_sources_glob", "generated/srcs/*.cpp"),
         modified_fraction=config.get("modified_fraction", 0.15),
     )

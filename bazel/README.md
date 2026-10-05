@@ -28,10 +28,28 @@ INVALID_ARGUMENT: ... No matching action runner found
 client-provided platform proto: properties { name: "cache-silo-key" ... }
 ```
 
-To avoid this the benchmark always sends a runner-selecting property. The
-defaults are `container-image=docker://<image>` (from the config's `image`) and
-`OSFamily=Linux`, plus the per-run `cache-silo-key`. Override or extend them via
-`bazel_exec_properties` in the config if your cluster expects different keys.
+To avoid this the benchmark always sends the runner-selecting
+`container-image=docker://<image>` property (from the config's `image`) plus the
+per-run `cache-silo-key`. Per EngFlow's platform-options reference the value must
+start with `docker://` and should include a digest. Machine-platform properties
+like `OSFamily` are *not* defaulted (EngFlow requires `OSFamily` and `ISA` to be
+set together) — add them via `bazel_exec_properties` only if your pool needs them.
+
+### Build Event Protocol (BES)
+
+BES is **on by default** for Bazel: the generated `build:remote` config streams
+the Build Event Protocol to EngFlow's BES backend, giving each invocation a web
+UI (timeline, action details, logs). The relevant lines mirror the standard
+EngFlow pattern and reuse the same gRPC endpoint + mTLS credentials:
+
+```
+build:remote --remote_executor=grpcs://<rbe host:port>
+build:remote --bes_backend=grpcs://<rbe host:port>
+build:remote --bes_results_url=https://<rbe host>/invocation/
+```
+
+Override the invocation-link base URL with `bazel_bes_results_url`, or set
+`bazel_enable_bes: false` to disable BES.
 
 ## Measured steps
 
@@ -71,4 +89,8 @@ Bazel-specific keys in `config.json` (see `../benchmark.py --help` for the full 
   (default `generated/srcs/*.cpp`).
 - `modified_fraction`: fraction (0–1) of those sources to modify (default `0.15`).
 - `bazel_exec_properties`: dict of RBE platform exec properties, merged over the
-  defaults `container-image=docker://<image>` and `OSFamily=Linux`.
+  default `container-image=docker://<image>`.
+- `bazel_enable_bes`: stream the Build Event Protocol to EngFlow's BES backend
+  for a per-invocation web UI (default `true`).
+- `bazel_bes_results_url`: base URL for BES invocation links (default
+  `https://<rbe host>/invocation/`).
