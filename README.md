@@ -67,3 +67,17 @@ python3 ../benchmark.py config.json
 ```
 
 Wait and find the results in the `<output_dir>/benchmark-results.json`or in `<output_dir>/benchmark-results.csv`
+
+## Build systems
+
+The harness supports two build systems, selected via the `build_system` config key:
+
+- **`cmake`** (default): runs a local `cmake` pass and a remote `cmake-re` pass
+  (VTK and LLVM benchmarks).
+- **`bazel`**: distributed-only — all compilation is offloaded to the RBE
+  cluster, with no local pass. See [`bazel/README.md`](bazel/README.md).
+
+```bash
+cd bazel/
+python3 ../benchmark.py config.json
+```

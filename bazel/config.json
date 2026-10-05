@@ -1,0 +1,24 @@
+{
+  "repo_url": "https://github.com/Lambourl/bazel-benchmark.git",
+  "branch": "main",
+  "build_system": "bazel",
+  "image": "tipibuild/tipi-ubuntu-2404@sha256:29ffeb7fdb551eb289775098abe0ba0699bfcd654049ee51cb978c6b2c0361e7",
+  "iterations": 3,
+  "jobs": 8000,
+  "output_dir": "output",
+  "modified_file": "include/bench/fib.hpp",
+  "rbe_service": "kernite.cluster.engflow.com:443",
+  "RBE_exec_strategy": "remote",
+  "mtls_dir": "engflow-mTLS",
+  "bazel_bin": "bazel",
+  "bazel_targets": "//...",
+  "bazel_remote_instance": "default",
+  "modified_sources_glob": "generated/srcs/*.cpp",
+  "modified_fraction": 0.15,
+  "download_engflow_profiles": false,
+  "bazel_args": [
+    "--cxxopt=-std=c++17",
+    "--host_cxxopt=-std=c++17",
+    "--verbose_failures"
+  ]
+}

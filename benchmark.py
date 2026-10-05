@@ -33,11 +33,18 @@ class BenchmarkConfig:
     mtls_dir: str
     download_engflow_profiles: bool
     profile_error_patterns: list
+    build_system: str = "cmake"
     cmake_source_dir: str = "."
     archive_container_data: bool = False
     cmake_args: list = field(default_factory=list)
     docker_env: list = field(default_factory=list)
     preheat_targets: list = field(default_factory=list)
+    bazel_targets: str = "//..."
+    bazel_bin: str = "bazel"
+    bazel_remote_instance: str = "default"
+    bazel_args: list = field(default_factory=list)
+    modified_sources_glob: str = "generated/srcs/*.cpp"
+    modified_fraction: float = 0.15
     pending_profile_downloads: list = field(default_factory=list)
 
 
@@ -237,6 +244,21 @@ def clean_test_repo(source_dir):
     subprocess.run(["git", "clean", "-fd"], cwd=str(source_dir), check=True)
 
 
+def modify_fraction_of_sources(container, sources_glob, fraction):
+    """Inject a unique comment into a fraction of translation units to trigger a partial rebuild."""
+    touch_uuid = str(uuid.uuid4())
+    # Pick ceil(fraction * N) files deterministically (sorted + head) and append a unique line to each.
+    script = (
+        f'files=$(ls {sources_glob} | sort); '
+        'total=$(echo "$files" | wc -l); '
+        f'n=$(( (total * {int(round(fraction * 100))} + 99) / 100 )); '
+        '[ "$n" -lt 1 ] && n=1; '
+        'echo "Modifying $n of $total translation units"; '
+        f'echo "$files" | head -n "$n" | while read f; do echo "// touch {touch_uuid}" >> "$f"; done'
+    )
+    container.run(script, step="modify_sources")
+
+
 def modify_file_to_trigger_incremental_build(container, modified_file):
     """Inject a unique #define into a header to trigger a cascade rebuild."""
     touch_uuid = str(uuid.uuid4())
@@ -355,6 +377,52 @@ def cmake_re_steps(container, result, toolchain, cfg):
         print(f"  Queued EngFlow profile download ({len(cfg.pending_profile_downloads)} pending)")
 
 
+def write_bazel_remote_rc(container, cfg, rc_path, silo_key):
+    """Generate a bazelrc inside the container pointing Bazel at the EngFlow RBE cluster with mTLS auth.
+
+    Keeping the endpoint, instance and cert/key in a `build:remote` config means the build commands
+    only need `--config=remote`, instead of repeating connection flags on every invocation.
+    """
+    home = os.environ["HOME"]
+    endpoint = f"grpcs://{cfg.rbe_service}"
+    lines = [
+        f"build:remote --remote_executor={endpoint}",
+        f"build:remote --remote_cache={endpoint}",
+        f"build:remote --remote_instance_name={cfg.bazel_remote_instance}",
+        f"build:remote --tls_client_certificate={home}/{cfg.mtls_dir}/engflow.crt",
+        f"build:remote --tls_client_key={home}/{cfg.mtls_dir}/engflow.key",
+        "build:remote --remote_timeout=3600",
+        f"build:remote --jobs={cfg.jobs}",
+        f"build:remote --remote_default_exec_properties=cache-silo-key={silo_key}",
+        *[f"build:remote {arg}" for arg in cfg.bazel_args],
+    ]
+    heredoc = "\n".join(lines)
+    container.run(f"cat > {rc_path} <<'BAZELRC'\n{heredoc}\nBAZELRC", step="write_bazelrc")
+
+
+def bazel_steps(container, result, toolchain, cfg):
+    """Distributed-only Bazel benchmark: all compilation is offloaded to the RBE cluster."""
+    silo_key = str(uuid.uuid4())
+    rc_path = "/tmp/benchmark.bazelrc"
+    write_bazel_remote_rc(container, cfg, rc_path, silo_key)
+    build_cmd = f'{cfg.bazel_bin} --bazelrc={rc_path} build {cfg.bazel_targets} --config=remote'
+
+    # Cold distributed build under a unique cache silo so remote workers do the compilation.
+    result.record("build", container.run(build_cmd, step="build"))
+
+    # Partial incremental: change only a fraction of the TUs (not the shared header, which would
+    # recompile all 20k units), so the rebuild reflects a realistic incremental change.
+    modify_fraction_of_sources(container, cfg.modified_sources_glob, cfg.modified_fraction)
+    result.record("modified_file_rebuild", container.run(build_cmd, step="modified_file_rebuild"))
+
+    # Drop local outputs, then rebuild — this measures remote-cache hit performance.
+    container.run(f'{cfg.bazel_bin} clean', step="clean")
+    result.record("rebuild", container.run(build_cmd, step="rebuild"))
+
+    if cfg.archive_container_data:
+        archive_container_data_excluding_repo(container, cfg.source_dir, container.log_dir)
+
+
 def scan_engflow_profiles(output_dir, error_strings):
     """Scan EngFlow profile files for known error patterns."""
     profile_files = list(output_dir.rglob("engflow_profile/*.json")) + list(output_dir.rglob("engflow_profile/*.txt"))
@@ -403,6 +471,7 @@ Expected JSON config format:
   "repo_url":    "<git URL of the repository to benchmark>",
   "branch":      "<git branch to checkout>",
   "image":       "<docker image (name or name@sha256:digest)>",
+  "build_system": "<'cmake' (default) or 'bazel'; bazel runs distributed-only, no local pass>",
   "toolchains":  [
     {
       "path":        "<path to CMake toolchain file, relative to repo root>",
@@ -421,7 +490,13 @@ Expected JSON config format:
   "docker_env":                "<list of extra environment variables for docker run, e.g. [\"KEY=value\"] (default: [])>",
   "preheat_targets":           "<list of CMake targets for preheat builds (default: [] = build all)>",
   "download_engflow_profiles": "<bool: download EngFlow profiling data after each cmake-re iteration (default: false)>",
-  "profile_error_patterns":    "<list of strings to search for in downloaded profiles (default: [])>"
+  "profile_error_patterns":    "<list of strings to search for in downloaded profiles (default: [])>",
+  "bazel_targets":             "<bazel target pattern to build, e.g. '//...' (default: '//...')>",
+  "bazel_bin":                 "<bazel binary to invoke inside the container (default: 'bazel')>",
+  "bazel_remote_instance":     "<RBE remote instance name for bazel (default: 'default')>",
+  "bazel_args":                "<list of extra bazel build flags (default: [])>",
+  "modified_sources_glob":     "<glob of TU sources to touch for the incremental rebuild (default: 'generated/srcs/*.cpp')>",
+  "modified_fraction":         "<fraction (0-1) of matched sources to modify for the incremental rebuild (default: 0.15)>"
 }"""
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -438,12 +513,21 @@ Expected JSON config format:
     except FileNotFoundError:
         parser.error(f"config file not found: {args.config}")
 
-    required_keys = ["repo_url", "branch", "image", "toolchains", "modified_file", "RBE_exec_strategy"]
+    build_system = config.get("build_system", "cmake")
+    if build_system not in ("cmake", "bazel"):
+        parser.error(f"unknown build_system: {build_system!r} (expected 'cmake' or 'bazel')")
+
+    required_keys = ["repo_url", "branch", "image", "modified_file", "RBE_exec_strategy"]
+    if build_system == "cmake":
+        required_keys.append("toolchains")
     missing = [k for k in required_keys if k not in config]
     if missing:
         parser.error(f"missing required config keys: {', '.join(missing)}")
 
-    for i, tc in enumerate(config["toolchains"]):
+    # Bazel has no CMake toolchain file; use a single synthetic entry so the
+    # benchmark loop still produces one labeled run.
+    toolchains = config.get("toolchains") or [{"path": "bazel", "description": "distributed"}]
+    for i, tc in enumerate(toolchains):
         for key in ("path", "description"):
             if key not in tc:
                 parser.error(f"toolchains[{i}] is missing required key: {key}")
@@ -461,7 +545,7 @@ Expected JSON config format:
         source_dir=clone_repo(config["repo_url"], config["branch"]),
         image=pull_docker_image(config["image"]),
         iterations=config.get("iterations", 1),
-        toolchains=[(tc["path"], tc["description"]) for tc in config["toolchains"]],
+        toolchains=[(tc["path"], tc["description"]) for tc in toolchains],
         output_dir=output_dir,
         modified_file=config["modified_file"],
         rbe_service=config.get("rbe_service", "kernite.cluster.engflow.com:443"),
@@ -475,12 +559,23 @@ Expected JSON config format:
         cmake_args=config.get("cmake_args", []),
         docker_env=config.get("docker_env", []),
         preheat_targets=config.get("preheat_targets", []),
+        build_system=build_system,
+        bazel_targets=config.get("bazel_targets", "//..."),
+        bazel_bin=config.get("bazel_bin", "bazel"),
+        bazel_remote_instance=config.get("bazel_remote_instance", "default"),
+        bazel_args=config.get("bazel_args", []),
+        modified_sources_glob=config.get("modified_sources_glob", "generated/srcs/*.cpp"),
+        modified_fraction=config.get("modified_fraction", 0.15),
     )
 
     all_results = []
     suite_start = time.perf_counter()
-    all_results.extend(run_benchmarks(cfg, "cmake", cmake_steps))
-    all_results.extend(run_benchmarks(cfg, "cmake-re", cmake_re_steps))
+    if cfg.build_system == "bazel":
+        # Bazel is distributed-only here: no local-execution scenario is run.
+        all_results.extend(run_benchmarks(cfg, "bazel", bazel_steps))
+    else:
+        all_results.extend(run_benchmarks(cfg, "cmake", cmake_steps))
+        all_results.extend(run_benchmarks(cfg, "cmake-re", cmake_re_steps))
     suite_elapsed = time.perf_counter() - suite_start
 
     results_file = output_dir / "benchmark-results.json"
