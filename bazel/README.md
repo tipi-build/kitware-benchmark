@@ -29,8 +29,11 @@ client-provided platform proto: properties { name: "cache-silo-key" ... }
 ```
 
 To avoid this the benchmark always sends the runner-selecting
-`container-image=docker://<image>` property (from the config's `image`) plus the
-per-run `cache-silo-key`. Per EngFlow's platform-options reference the value must
+`container-image=docker://<image>` property plus the per-run `cache-silo-key`.
+The image used here is `bazel_remote_image` if set, otherwise `image` — the RBE
+workers pull it themselves, so it can point at a registry co-located with the
+cluster (e.g. ACR/GHCR) to avoid Docker Hub rate limits, while the local
+benchmark container keeps using `image`. Per EngFlow's platform-options reference the value must
 start with `docker://` and should include a digest. Machine-platform properties
 like `OSFamily` are *not* defaulted (EngFlow requires `OSFamily` and `ISA` to be
 set together) — add them via `bazel_exec_properties` only if your pool needs them.
@@ -83,6 +86,9 @@ Bazel-specific keys in `config.json` (see `../benchmark.py --help` for the full 
 - `bazel_targets`: target pattern to build (default `//...`).
 - `bazel_bin`: bazel binary invoked in the container (default `bazel`).
 - `bazel_remote_instance`: RBE remote instance name (default `default`).
+- `bazel_remote_image`: docker image the RBE workers execute in (the
+  `container-image` exec property). Falls back to `image` when unset. Point this
+  at a cluster-local registry to avoid Docker Hub pull throttling.
 - `bazel_args`: extra `bazel build` flags.
 - `jobs`: passed as `--jobs` (high values fan work out across the cluster).
 - `modified_sources_glob`: glob of TU sources touched for the incremental step

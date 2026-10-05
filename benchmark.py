@@ -42,6 +42,7 @@ class BenchmarkConfig:
     bazel_targets: str = "//..."
     bazel_bin: str = "bazel"
     bazel_remote_instance: str = "default"
+    bazel_remote_image: str = ""
     bazel_args: list = field(default_factory=list)
     bazel_exec_properties: dict = field(default_factory=dict)
     bazel_enable_bes: bool = True
@@ -404,8 +405,13 @@ def write_bazel_remote_rc(container, cfg, rc_path, silo_key):
     # reference the value must start with `docker://` and should include a digest. Machine-platform
     # props like OSFamily are intentionally NOT defaulted here — OSFamily must be paired with ISA,
     # so add both via bazel_exec_properties if your pool requires them.
+    #
+    # The RBE workers pull this image themselves, so it can differ from the local benchmark
+    # container (cfg.image) — e.g. a registry co-located with the cluster to avoid Docker Hub
+    # rate limits. Falls back to cfg.image when bazel_remote_image is unset.
+    remote_image = cfg.bazel_remote_image or cfg.image
     exec_props = {
-        "container-image": f"docker://{cfg.image}",
+        "container-image": f"docker://{remote_image}",
         **cfg.bazel_exec_properties,
         "cache-silo-key": silo_key,
     }
@@ -520,6 +526,7 @@ Expected JSON config format:
   "bazel_targets":             "<bazel target pattern to build, e.g. '//...' (default: '//...')>",
   "bazel_bin":                 "<bazel binary to invoke inside the container (default: 'bazel')>",
   "bazel_remote_instance":     "<RBE remote instance name for bazel (default: 'default')>",
+  "bazel_remote_image":        "<docker image RBE workers execute in, as container-image exec prop; falls back to 'image' if unset (default: '')>",
   "bazel_args":                "<list of extra bazel build flags (default: [])>",
   "bazel_exec_properties":     "<dict of RBE platform exec properties, merged over default container-image=docker://<image> (default: {})>",
   "bazel_enable_bes":          "<bool: stream the Build Event Protocol to the EngFlow BES backend for a build UI (default: true)>",
@@ -592,6 +599,7 @@ Expected JSON config format:
         bazel_targets=config.get("bazel_targets", "//..."),
         bazel_bin=config.get("bazel_bin", "bazel"),
         bazel_remote_instance=config.get("bazel_remote_instance", "default"),
+        bazel_remote_image=config.get("bazel_remote_image", ""),
         bazel_args=config.get("bazel_args", []),
         bazel_exec_properties=config.get("bazel_exec_properties", {}),
         bazel_enable_bes=config.get("bazel_enable_bes", True),
