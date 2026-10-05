@@ -9,12 +9,29 @@ offloads compilation to the EngFlow RBE cluster (`--remote_executor` +
 (local Apple-clang builds are not supported, and the point of the workload is to
 exercise remote execution).
 
-The RBE endpoint, remote instance, mTLS cert/key and a per-run cache-silo key are
-written into a generated `build:remote` config in a bazelrc inside the container
-at the start of each iteration (derived from `rbe_service`, `bazel_remote_instance`
-and `mtls_dir`). The build commands then just pass `--config=remote`, so the
-connection details are configured on the fly rather than hard-coded in the repo's
-`.bazelrc`.
+The RBE endpoint, remote instance, mTLS cert/key, platform exec properties and a
+per-run cache-silo key are written into a generated `build:remote` config in a
+bazelrc inside the container at the start of each iteration (derived from
+`rbe_service`, `bazel_remote_instance`, `mtls_dir` and `image`). The build
+commands then just pass `--config=remote`, so the connection details are
+configured on the fly rather than hard-coded in the repo's `.bazelrc`.
+
+### Platform exec properties (required by EngFlow)
+
+EngFlow's docker-based runners pick which runner/image to execute an action in
+from the action's **platform exec properties**. If Bazel only sends a
+`cache-silo-key`, the scheduler rejects every action with:
+
+```
+INVALID_ARGUMENT: ... No matching action runner found
+(available: WorkerInDockerActionRunner, CachedDockerActionRunner),
+client-provided platform proto: properties { name: "cache-silo-key" ... }
+```
+
+To avoid this the benchmark always sends a runner-selecting property. The
+defaults are `container-image=docker://<image>` (from the config's `image`) and
+`OSFamily=Linux`, plus the per-run `cache-silo-key`. Override or extend them via
+`bazel_exec_properties` in the config if your cluster expects different keys.
 
 ## Measured steps
 
@@ -53,3 +70,5 @@ Bazel-specific keys in `config.json` (see `../benchmark.py --help` for the full 
 - `modified_sources_glob`: glob of TU sources touched for the incremental step
   (default `generated/srcs/*.cpp`).
 - `modified_fraction`: fraction (0–1) of those sources to modify (default `0.15`).
+- `bazel_exec_properties`: dict of RBE platform exec properties, merged over the
+  defaults `container-image=docker://<image>` and `OSFamily=Linux`.

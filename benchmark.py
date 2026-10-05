@@ -43,6 +43,7 @@ class BenchmarkConfig:
     bazel_bin: str = "bazel"
     bazel_remote_instance: str = "default"
     bazel_args: list = field(default_factory=list)
+    bazel_exec_properties: dict = field(default_factory=dict)
     modified_sources_glob: str = "generated/srcs/*.cpp"
     modified_fraction: float = 0.15
     pending_profile_downloads: list = field(default_factory=list)
@@ -393,9 +394,20 @@ def write_bazel_remote_rc(container, cfg, rc_path, silo_key):
         f"build:remote --tls_client_key={home}/{cfg.mtls_dir}/engflow.key",
         "build:remote --remote_timeout=3600",
         f"build:remote --jobs={cfg.jobs}",
-        f"build:remote --remote_default_exec_properties=cache-silo-key={silo_key}",
-        *[f"build:remote {arg}" for arg in cfg.bazel_args],
     ]
+
+    # EngFlow's docker-based runners select which runner/image to execute an action in from the
+    # platform exec properties. Without a runner-selecting property (e.g. container-image) the
+    # scheduler rejects actions with "No matching action runner found". The cache-silo-key alone
+    # is not enough — it only isolates the cache namespace. Each property is one default_exec_prop.
+    exec_props = {
+        "container-image": f"docker://{cfg.image}",
+        "OSFamily": "Linux",
+        **cfg.bazel_exec_properties,
+        "cache-silo-key": silo_key,
+    }
+    lines += [f"build:remote --remote_default_exec_properties={k}={v}" for k, v in exec_props.items()]
+    lines += [f"build:remote {arg}" for arg in cfg.bazel_args]
     heredoc = "\n".join(lines)
     container.run(f"cat > {rc_path} <<'BAZELRC'\n{heredoc}\nBAZELRC", step="write_bazelrc")
 
@@ -495,6 +507,7 @@ Expected JSON config format:
   "bazel_bin":                 "<bazel binary to invoke inside the container (default: 'bazel')>",
   "bazel_remote_instance":     "<RBE remote instance name for bazel (default: 'default')>",
   "bazel_args":                "<list of extra bazel build flags (default: [])>",
+  "bazel_exec_properties":     "<dict of RBE platform exec properties; merged over defaults container-image=docker://<image> and OSFamily=Linux (default: {})>",
   "modified_sources_glob":     "<glob of TU sources to touch for the incremental rebuild (default: 'generated/srcs/*.cpp')>",
   "modified_fraction":         "<fraction (0-1) of matched sources to modify for the incremental rebuild (default: 0.15)>"
 }"""
@@ -564,6 +577,7 @@ Expected JSON config format:
         bazel_bin=config.get("bazel_bin", "bazel"),
         bazel_remote_instance=config.get("bazel_remote_instance", "default"),
         bazel_args=config.get("bazel_args", []),
+        bazel_exec_properties=config.get("bazel_exec_properties", {}),
         modified_sources_glob=config.get("modified_sources_glob", "generated/srcs/*.cpp"),
         modified_fraction=config.get("modified_fraction", 0.15),
     )
