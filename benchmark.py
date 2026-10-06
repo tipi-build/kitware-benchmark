@@ -381,11 +381,14 @@ def cmake_re_steps(container, result, toolchain, cfg):
         print(f"  Queued EngFlow profile download ({len(cfg.pending_profile_downloads)} pending)")
 
 
-def write_bazel_remote_rc(container, cfg, rc_path, silo_key):
+def write_bazel_remote_rc(container, cfg, rc_path, silo_key=None, step="write_bazelrc"):
     """Generate a bazelrc inside the container pointing Bazel at the EngFlow RBE cluster with mTLS auth.
 
     Keeping the endpoint, instance and cert/key in a `build:remote` config means the build commands
     only need `--config=remote`, instead of repeating connection flags on every invocation.
+
+    When silo_key is falsy no cache-silo-key is emitted, so the build shares the cluster-wide remote
+    cache (used for the preheat warm-up); a unique silo_key isolates a run into its own cache namespace.
     """
     home = os.environ["HOME"]
     endpoint = f"grpcs://{cfg.rbe_service}"
@@ -413,8 +416,9 @@ def write_bazel_remote_rc(container, cfg, rc_path, silo_key):
     exec_props = {
         "container-image": f"docker://{remote_image}",
         **cfg.bazel_exec_properties,
-        "cache-silo-key": silo_key,
     }
+    if silo_key:
+        exec_props["cache-silo-key"] = silo_key
     lines += [f"build:remote --remote_default_exec_properties={k}={v}" for k, v in exec_props.items()]
 
     # Build Event Protocol: stream build events to EngFlow's BES backend so each invocation gets a
@@ -429,7 +433,46 @@ def write_bazel_remote_rc(container, cfg, rc_path, silo_key):
 
     lines += [f"build:remote {arg}" for arg in cfg.bazel_args]
     heredoc = "\n".join(lines)
-    container.run(f"cat > {rc_path} <<'BAZELRC'\n{heredoc}\nBAZELRC", step="write_bazelrc")
+    container.run(f"cat > {rc_path} <<'BAZELRC'\n{heredoc}\nBAZELRC", step=step)
+
+
+def bazel_preheat(toolchain, cfg):
+    """Warm the RBE cluster with parallel distributed builds before the measured run.
+
+    Mirrors cmake_re_preheat: fan out several concurrent builds (each in its own container with a
+    unique cache silo) so the cluster is scaled up and warm when the timed build starts. Each task
+    uses a distinct Bazel --output_base under the container-local /tmp so the parallel servers don't
+    collide on the shared $HOME output base.
+    """
+    start = time.perf_counter()
+
+    tc_name = Path(toolchain).stem
+    log_dir = cfg.output_dir / "logs" / "bazel" / tc_name / "preheat"
+
+    def single_preheat_run(task_ix):
+        silo_key = str(uuid.uuid4())
+        with DockerContainer(cfg.image, cfg.source_dir, log_dir, cfg.rbe_service, cfg.RBE_exec_strategy, cfg.mtls_dir, cfg.docker_env) as container:
+            time.sleep(task_ix * 10)  # staggered start to allow for ramp up
+
+            print(f" - preheat task {task_ix} start")
+            rc_path = f"/tmp/benchmark_preheat_{task_ix}.bazelrc"
+            output_base = f"/tmp/bazel_preheat_{task_ix}"
+            write_bazel_remote_rc(container, cfg, rc_path, silo_key, step="write_bazelrc")
+            targets = " ".join(cfg.preheat_targets) if cfg.preheat_targets else cfg.bazel_targets
+            container.run(
+                f'{cfg.bazel_bin} --output_base={output_base} --bazelrc={rc_path} build {targets} --config=remote',
+                step="build",
+            )
+            print(f" - preheat task {task_ix} done")
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        indices = range(4)
+        print(f"Running preheat tasks on the threadpool: {indices}")
+        list(executor.map(single_preheat_run, indices))
+
+    elapsed = time.perf_counter() - start
+    print(f"All preheat tasks completed in {elapsed}")
+    return elapsed
 
 
 def bazel_steps(container, result, toolchain, cfg):
@@ -438,6 +481,15 @@ def bazel_steps(container, result, toolchain, cfg):
     rc_path = "/tmp/benchmark.bazelrc"
     write_bazel_remote_rc(container, cfg, rc_path, silo_key)
     build_cmd = f'{cfg.bazel_bin} --bazelrc={rc_path} build {cfg.bazel_targets} --config=remote'
+
+    # Build without a silo key to populate the shared remote cache, then clean — mirrors cmake-re.
+    no_silo_rc = "/tmp/benchmark_no_silo.bazelrc"
+    write_bazel_remote_rc(container, cfg, no_silo_rc, silo_key=None, step="write_bazelrc_no_silo")
+    container.run(f'{cfg.bazel_bin} --bazelrc={no_silo_rc} build {cfg.bazel_targets} --config=remote', step="build_no_silo")
+    container.run(f'{cfg.bazel_bin} clean', step="clean_after_no_silo")
+
+    # Preheat: scale up and warm the cluster with parallel builds before the timed build.
+    result.record("preheat_cluster", bazel_preheat(toolchain, cfg))
 
     # Cold distributed build under a unique cache silo so remote workers do the compilation.
     result.record("build", container.run(build_cmd, step="build"))
